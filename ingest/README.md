@@ -1,8 +1,39 @@
 # ingest
 
-Python asyncio syslog (UDP+TCP 514), FastAPI HTTP ingest, and the CLI batch
-loader — not implemented yet (out of scope for this session, which covers
-project scaffolding and the storage layer only).
+This session implements the syslog UDP/TCP listener, per-source
+normalizers, and the CLI batch loader. FastAPI HTTP ingest is not
+implemented yet (a future session).
 
-Whatever normalizes incoming logs here maps the common schema's `@timestamp`
-field to the `events.event_time` column — see `docs/DECISIONS.md`.
+Every incoming log — regardless of source — is normalized into the single
+`NormalizedEvent` model in `models.py`, which maps the common schema's
+`@timestamp` field to the `events.event_time` column and flattens `cloud.*`
+into `cloud_account_id`/`cloud_region`/`cloud_service` (see
+`docs/DECISIONS.md` #1-#2). Unparseable input is never dropped — it's
+stored as `source="unknown"` with the original payload preserved in `raw`
+(see `docs/DECISIONS.md`, and `ingest/normalizers/__init__.py`).
+
+## Running
+
+**Always invoke both scripts with `python -m`, never as a bare file path**
+(`python -m ingest.syslog_server`, not `python ingest/syslog_server.py`) —
+the latter fails with `ModuleNotFoundError: No module named 'ingest'`
+because Python puts the *script's own directory* on `sys.path`, not the
+repo root, when run as a path. See `docs/DECISIONS.md` #22.
+
+```bash
+# Syslog listener (needs postgres running: `make up`).
+# Port 514 needs root; use a high port for local testing.
+.venv/bin/python -m ingest.syslog_server --tenant demoA --udp-port 1514 --tcp-port 1514
+
+# Batch file loader (JSON or CSV).
+.venv/bin/python -m ingest.batch_loader samples/api.json --rebase-timestamps
+```
+
+`--rebase-timestamps` shifts the loaded records' `event_time` to "now"
+(preserving relative spacing between them) while leaving `raw` — and the
+sample files on disk — byte-identical to the original payload. It exists
+because the assignment's sample logs carry a fixed `2025-08-20` timestamp
+that would otherwise eventually fall outside the 7-day retention window
+and land in `events_default` instead of a real daily partition; see
+`docs/DECISIONS.md`. Only pass it for demo/seed data, never for a real
+historical log export.

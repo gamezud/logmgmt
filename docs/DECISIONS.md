@@ -565,3 +565,35 @@ shutdown ให้ต้องแยกจากการ crash จริง)
 "was cancelled") — ถ้าต้องการแยกในอนาคต (เช่น เมื่อมี graceful shutdown จริง)
 จะต้องใช้กลไกอื่นเพิ่ม เช่น flag บอกว่ากำลัง shutdown อยู่หรือไม่ ก่อนตัดสินใจว่าจะ
 log ระดับ critical หรือแค่ info
+
+---
+
+## 22. ต้องรัน `ingest/syslog_server.py` และ `ingest/batch_loader.py` ด้วย `python -m ingest.xxx` เท่านั้น ห้ามรันเป็น path ตรงๆ (บั๊กที่พบระหว่างทดสอบจริง)
+
+**บริบท:** ทั้งสองไฟล์ทำ `from ingest.db import ...` ซึ่งต้องมี repo root
+(ไดเรกทอรีที่มีโฟลเดอร์ `ingest/` อยู่) อยู่ใน `sys.path` ก่อนถึงจะ import
+`ingest` เป็น package ได้
+
+**สิ่งที่พบระหว่างทดสอบจริง (ไม่ใช่สมมติฐาน):** รัน
+`.venv/bin/python ingest/batch_loader.py samples/api.json` ตรงๆ (จาก repo root)
+ได้ `ModuleNotFoundError: No module named 'ingest'` ทันที — สาเหตุคือ Python
+เติม **ไดเรกทอรีที่ไฟล์สคริปต์อยู่** (`ingest/`) เข้า `sys.path[0]` เมื่อรันแบบ
+`python path/to/script.py` ไม่ใช่ current working directory เหมือนที่คิด
+ทำให้ `import ingest.db` กลายเป็นการหา package ชื่อ `ingest` ที่อยู่ *ข้างใน*
+`ingest/` เอง (คือ `ingest/ingest/`) ซึ่งไม่มีอยู่จริง — เป็นบั๊กคนละจุดแต่ราก
+เดียวกันกับที่พบใน `Makefile`'s `test` target (บันทึกไว้ตอนต้นเซสชันนี้): คำสั่ง
+`python -m <module>` เท่านั้นที่เติม current working directory เข้า `sys.path`
+ให้อัตโนมัติ การรัน `python <path/to/file>.py` ไม่ทำแบบนั้น
+
+**สิ่งที่เลือก:** เอกสารทุกจุดที่อ้างถึงการรันสองสคริปต์นี้ (README.md ของ `ingest/`,
+`Makefile`'s `seed` target, และคำสั่งตรวจสอบท้ายเซสชัน) ต้องใช้รูปแบบ
+`python -m ingest.batch_loader <args>` และ `python -m ingest.syslog_server <args>`
+เท่านั้น ห้ามใช้ `python ingest/batch_loader.py` แบบ path ตรงๆ เด็ดขาด — ยืนยันแล้วว่า
+`python -m ingest.batch_loader ...` ทำงานถูกต้อง (insert สำเร็จ, `event_time` ถูก
+rebase, `raw` เก็บ `@timestamp` เดิมไว้ครบ, แถวตกลง partition ของวันจริงไม่ใช่
+`events_default`)
+
+**ข้อเสียที่ยอมรับ:** คำสั่งยาวขึ้นเล็กน้อย (`python -m ingest.batch_loader` เทียบกับ
+`python ingest/batch_loader.py`) และผู้ใช้ที่คุ้นเคยกับการรัน script แบบ path ตรงๆ
+อาจลืมแล้วรันผิดรูปแบบได้ — บรรเทาด้วยการระบุรูปแบบที่ถูกต้องไว้ชัดเจนทุกจุดที่มีการ
+พูดถึงคำสั่งนี้ (`ingest/README.md`, `Makefile`, และคำสั่ง verification)
