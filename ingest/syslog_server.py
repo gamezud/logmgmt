@@ -40,7 +40,12 @@ class SyslogUDPProtocol(asyncio.DatagramProtocol):
         self.queue = queue
 
     def datagram_received(self, data: bytes, addr) -> None:
-        line = data.decode("utf-8", errors="replace")
+        # A UDP datagram has no line-ending convention of its own (unlike
+        # TCP's readline() framing), but senders commonly include a
+        # trailing newline anyway (e.g. piping a file through `nc -u`).
+        # Strip it so raw_line is consistent between the UDP and TCP paths
+        # for the same logical message.
+        line = data.decode("utf-8", errors="replace").rstrip("\n")
         event = handle_message(line, self.tenant)
         try:
             self.queue.put_nowait(event)
