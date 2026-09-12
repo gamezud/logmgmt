@@ -514,3 +514,54 @@ superuser ก็ยังโดนปฏิเสธ (ยืนยันด้�
 รันซ้ำ (schema เปลี่ยนมีผลกับ volume ที่ init ไปแล้วเท่านั้น ไม่กระทบข้อมูลจริงเพราะ
 ยังอยู่ในขั้น dev) — ไม่มีข้อเสียเชิง behavior ใดๆ เพราะไม่มี use case ที่ tenant
 ควรเป็นค่าว่างอยู่แล้ว
+
+---
+
+## 21. `writer_task` ต้องเก็บ reference ไว้ + `_writer_done` callback ต้องเช็ค `cancelled()` ก่อน `exception()`
+
+**บริบท:** `ingest/syslog_server.py` มี `writer_loop()` เป็น task เดียวที่คอย
+ดึงจากคิวแล้วเขียนลง DB (ดูข้อ 11 ในแผน — bounded queue + single writer แทน
+per-datagram task) ต้องออกแบบให้ถ้า task นี้ตายกลางทาง ต้องรู้ทันที ไม่ใช่ปล่อยให้
+server รับ log เข้าคิวต่อไปเรื่อยๆ โดยไม่มีอะไรถูกเขียนลง DB เลยแบบเงียบๆ
+
+**ปัญหาที่พบระหว่าง implement (ก่อนแก้):**
+1. `asyncio.create_task(writer_loop(queue, conn))` ถูกเรียกโดยไม่เก็บ return value
+   ไว้ในตัวแปรใดๆ — ตามเอกสาร asyncio เอง task ที่ไม่มีใครถือ reference ไว้เสี่ยงโดน
+   garbage collector เก็บไปกลางทางได้ ทำให้ writer หายไปเงียบๆ โดยไม่มี error ใดๆ
+2. ไม่มี `add_done_callback` ผูกไว้เลย ต่อให้ task ตายจริง (ด้วยเหตุผลอะไรก็ตาม)
+   ก็ไม่มีอะไรแจ้งเตือน
+
+**สิ่งที่เลือก:** เก็บ `writer_task = asyncio.create_task(...)` ไว้เป็นตัวแปรใน `main()`
+(มีอายุเท่ากับทั้งโปรแกรม เพราะ `main()` รันจนจบด้วย `serve_forever()` ที่ไม่มีวันคืนค่า)
+แล้วผูก `writer_task.add_done_callback(_writer_done)` ซึ่ง `_writer_done` log
+ระดับ `CRITICAL` ทุกกรณีที่ task จบ ไม่ว่าจะจบแบบไหน
+
+**เหตุผลที่ต้องเช็ค `task.cancelled()` ก่อนเรียก `task.exception()` เสมอ:** ทดสอบจริง
+พบว่าการเรียก `.exception()` บน task ที่ถูก cancel จะ **re-raise `CancelledError`
+ออกมาแทนที่จะ return ค่า** — ถ้าเรียก `.exception()` ก่อนโดยไม่เช็ค `cancelled()`
+ก่อน จะทำให้ callback เองพังและ error หลุดไปให้ asyncio's default exception
+handler จัดการแทน (ข้อความไม่ชัดเจนเท่าที่ตั้งใจไว้)
+
+**ทดสอบจริงยืนยันสองกรณี (ทั้งคู่ log `CRITICAL` ถูกต้อง):**
+- กรณี A — `write_event_async` โยน `asyncio.CancelledError` ออกมาเอง (จำลอง
+  cancellation ที่หลุดออกมาจาก await ข้างในระหว่างเขียน DB เช่น connection ถูก
+  cancel กลางทาง) — `writer_loop`'s `except Exception:` **จับไม่ได้** เพราะ
+  `CancelledError` สืบทอดจาก `BaseException` ไม่ใช่ `Exception` (ตั้งแต่ Python 3.8)
+  นี่คือเหตุผลหลักที่ callback ระดับนี้ต้องมีอยู่ — ไม่มีทางป้องกันด้วย
+  `try/except Exception` ธรรมดาข้างในได้เลย
+- กรณี B — เรียก `writer_task.cancel()` จากภายนอกโดยตรง (จำลอง graceful shutdown
+  ในอนาคตที่ยังไม่มีในเซสชันนี้)
+
+**สิ่งที่สังเกตเห็นเพิ่มเติมและยอมรับได้:** ทั้งสองกรณีข้างต้นทำให้
+`task.cancelled()` เป็น `True` เหมือนกันทุกประการที่ระดับ callback — แยกไม่ออก
+ว่าเป็น "cancellation ที่ตั้งใจจากภายนอก" หรือ "CancelledError ที่หลุดมาจากข้างใน
+โดยไม่ตั้งใจ" เพราะ Python เอง treat ทั้งสองแบบเหมือนกันในระดับ Task object
+ยอมรับได้เพราะผลลัพธ์ที่สำคัญที่สุดเหมือนกันทุกประการ: writer task หยุดทำงาน
+ไม่มีอะไรเขียนลง DB อีก และต้องมีคนเข้าไปดู log `CRITICAL` ไม่ว่าสาเหตุจะเป็นอะไร
+— การแยกแยะสาเหตุละเอียดกว่านี้ไม่จำเป็นสำหรับ session นี้ (ยังไม่มี graceful
+shutdown ให้ต้องแยกจากการ crash จริง)
+
+**ข้อเสียที่ยอมรับ:** log message ของทั้งสองกรณีไม่บอกสาเหตุที่มาต่างกัน (บอกแค่ว่า
+"was cancelled") — ถ้าต้องการแยกในอนาคต (เช่น เมื่อมี graceful shutdown จริง)
+จะต้องใช้กลไกอื่นเพิ่ม เช่น flag บอกว่ากำลัง shutdown อยู่หรือไม่ ก่อนตัดสินใจว่าจะ
+log ระดับ critical หรือแค่ info
