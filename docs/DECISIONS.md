@@ -419,3 +419,98 @@ Python เป็น "externally-managed-environment" ซึ่ง `pip install` 
 
 **ข้อเสียที่ยอมรับ:** ไม่มีข้อเสียที่มีนัยสำคัญ — `.venv/` ถูกเพิ่มใน `.gitignore`
 อยู่แล้วตั้งแต่ scaffold แรก จึงไม่มีความเสี่ยงที่จะ commit venv ลง repo โดยไม่ตั้งใจ
+
+---
+
+## 18. `SET LOCAL app.tenant = %s` ใช้ bind parameter ไม่ได้ (บั๊กที่พบระหว่าง implement ingest layer) — ใช้ `set_config()` แทน
+
+**บริบท:** `ingest/db.py` ต้องตั้งค่า `app.tenant` ด้วยค่าที่มาจากตัวแปร (ไม่ใช่ literal
+คงที่แบบใน `tests/test_rls_tenant_isolation.py`) ก่อน insert ทุกครั้ง จึงต้องส่งค่า
+tenant ผ่าน bind parameter ของ psycopg เพื่อไม่ให้เปิดช่อง SQL injection
+
+**สิ่งที่พบระหว่างทดสอบจริง (ไม่ใช่สมมติฐาน):** ทดสอบ
+`cur.execute("SET LOCAL app.tenant = %s", (tenant,))` กับ `postgres:16` ตรงๆ
+ได้ error ทันที: `SyntaxError: syntax error at or near "$1"` — คำสั่ง `SET` ของ
+Postgres ไม่รองรับ bind parameter ในตำแหน่งค่า (value) เลย ไม่ว่ากรณีใด
+เป็นข้อจำกัดคนละแบบแต่คล้ายกับที่เจอใน `FOR VALUES FROM (%s)` ตอนเขียน
+`03_partition_maintenance.sql` (ต้องใช้ `format()`/`%L` แทน)
+
+**ตัวเลือกที่พิจารณา:**
+- (a) ต่อสตริงค่า tenant เข้าไปใน SQL ตรงๆ (`f"SET LOCAL app.tenant = '{tenant}'"`)
+- (b) ใช้ `SELECT set_config('app.tenant', %s, true)` แทน `SET LOCAL`
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** (a) เปิดช่องโหว่ SQL injection ผ่านค่า tenant ทันที (แม้ปัจจุบัน tenant
+จะมาจากค่าที่ operator/listener กำหนดเอง ไม่ใช่ input จาก client โดยตรง แต่ก็ไม่ควร
+เขียนโค้ดที่ไม่ปลอดภัยโดยหลักการ) ส่วน `set_config(setting_name, new_value, is_local)`
+เป็นฟังก์ชัน SQL ปกติ ไม่ใช่คำสั่ง `SET` — จึงรับ bind parameter ได้เหมือน query อื่นๆ
+ทุกประการ อาร์กิวเมนต์ตัวที่สาม `true` (`is_local`) คือสิ่งที่ทำให้พฤติกรรมเทียบเท่า
+`SET LOCAL` ทุกประการ: มีผลแค่ transaction ปัจจุบัน แล้ว reset เมื่อจบ (ดูข้อ 19
+เรื่องค่าที่ reset ไปเป็นอะไร)
+
+**ข้อเสียที่ยอมรับ:** ไม่มีข้อเสียที่มีนัยสำคัญ — `set_config()` เป็นฟังก์ชัน built-in
+มาตรฐานของ Postgres เอง ไม่ใช่ library ภายนอก และให้ผลลัพธ์เหมือน `SET LOCAL`
+ทุกประการเมื่อ `is_local = true`
+
+---
+
+## 19. หลังจบ transaction ค่า custom GUC (`app.tenant`) กลายเป็น `''` ไม่ใช่ `NULL` (พบระหว่างพิสูจน์ข้อ 18)
+
+**บริบท:** หลังยืนยันว่า `set_config('app.tenant', tenant, true)` ใช้แทน `SET LOCAL`
+ได้ ต้องตรวจสอบต่อว่าพฤติกรรม fail-closed ของ RLS (ข้อ 7) ยังใช้ได้จริงหรือไม่
+กับ connection ที่ใช้ซ้ำข้าม tenant ต่อเนื่อง (สถานการณ์จริงของ `ingest/syslog_server.py`
+ซึ่งเปิด connection เดียวค้างไว้ใช้เขียนทุก tenant)
+
+**ผลการทดสอบจริงกับ `postgres:16` (ไม่ใช่จากเอกสาร):** connection ที่เคย
+`set_config('app.tenant', 'test_leak_a', true)` ในทรานแซกชันหนึ่งแล้ว commit ไป —
+เมื่อ query `current_setting('app.tenant', true)` นอกทรานแซกชันนั้นในเวลาต่อมา (ไม่ได้
+ตั้งค่าใหม่) จะได้ค่าเป็น `''` (string ว่าง) ไม่ใช่ `NULL` เหมือนตอนที่ connection
+ไม่เคยแตะ `app.tenant` เลยตั้งแต่แรก — เป็นพฤติกรรมปกติของ Postgres สำหรับ custom
+GUC placeholder (parameter ที่ไม่ได้มาจาก extension ที่ registered ไว้ล่วงหน้า):
+ค่าที่ตั้งแบบ `is_local` จะ "reset" กลับไปที่ค่าก่อนหน้าของ session เมื่อจบทรานแซกชัน
+แต่ถ้า session เองก็ไม่เคยมีค่าที่ registered จริงจัง ค่าที่ reset กลับไปคือ `''`
+ไม่ใช่ `NULL` — ยืนยันด้วยสคริปต์ทดสอบตรงและซ้ำอีกครั้งด้วยเทสต์ถาวรใน
+`tests/test_db_write_roundtrip.py::test_no_leak_on_same_connection_after_transaction_ends`
+(ยืนยันด้วยว่าพฤติกรรมนี้เหมือนกันทั้งกรณีใช้ `SET LOCAL` literal ธรรมดาและ
+`set_config()` — ไม่ใช่ผลข้างเคียงจากการเปลี่ยนมาใช้ `set_config()` ในข้อ 18)
+
+**ผลกระทบที่ตรวจสอบแล้ว:** เงื่อนไข RLS `tenant = current_setting('app.tenant', true)`
+ยัง fail-closed อยู่ในกรณีนี้ด้วย เพราะ `tenant = ''` ก็ไม่ true เหมือนกัน — **แต่ความ
+ปลอดภัยตรงนี้ไม่ได้มาจาก NULL semantics แบบข้อ 7 อีกต่อไป** มันมาจากข้อเท็จจริงว่า
+ไม่มี tenant ไหนในตารางเป็นค่าว่างจริงๆ ต่างหาก ซึ่งตอนนั้น (ก่อนข้อ 20) ยังไม่มีอะไร
+บังคับไว้ในระดับ DB เลย เป็นแค่ความบังเอิญที่ไม่ควรพึ่งพา — นำไปสู่การเพิ่ม CHECK
+constraint ในข้อ 20
+
+**ข้อเสียที่ยอมรับ:** ไม่มี — เป็นการค้นพบพฤติกรรมจริงของ Postgres ที่ต้องรู้ไว้
+เพื่อออกแบบ constraint ให้ถูกจุด (ข้อ 20) ไม่ใช่ทางเลือกที่ต้องแลกอะไร
+
+---
+
+## 20. เพิ่ม `CHECK (tenant <> '')` บนคอลัมน์ `events.tenant`
+
+**บริบท:** จากข้อ 19 — การที่ RLS fail-closed ได้เมื่อ `app.tenant` reset เป็น `''`
+นั้น ขึ้นอยู่กับสมมติฐาน "ไม่มี tenant ไหนเป็นค่าว่าง" ซึ่งคอลัมน์เดิมมีแค่
+`NOT NULL` เท่านั้น — `NOT NULL` ห้ามแค่ `NULL` ไม่ได้ห้าม `''` เลย ทำให้สมมติฐานนี้
+เป็นเพียงความบังเอิญ ไม่ใช่สิ่งที่ระบบบังคับจริง
+
+**ตัวเลือกที่พิจารณา:**
+- (a) ปล่อยไว้แบบเดิม พึ่งพาว่า application code (Pydantic model / batch loader)
+  จะไม่มีวันส่งค่า tenant เป็น `''` เข้ามา
+- (b) เพิ่ม `CHECK (tenant <> '')` ที่ระดับ DB โดยตรง
+
+**สิ่งที่เลือก:** (b) — `tenant text NOT NULL CHECK (tenant <> '')`
+
+**เหตุผล:** ความปลอดภัยของ multi-tenant isolation ทั้งระบบพึ่งพาสมมติฐานนี้โดยตรง
+(ข้อ 19) การปล่อยให้เป็นแค่ "ความตั้งใจของ application code" ขัดกับหลักการเดียวกับ
+ที่ใช้เลือก RLS มาตั้งแต่ข้อ 6/7 ของเอกสารนี้ (ต้องบังคับที่ DB ไม่ใช่แค่ตั้งใจไว้ใน
+โค้ด) — `CHECK` ทำให้ "ไม่มี tenant ว่าง" เป็น invariant ที่ DB บังคับจริง ไม่ว่า
+จะ insert จากที่ไหน (ingest, batch loader, backend ในอนาคต) หรือแม้แต่ต่อด้วย
+superuser ก็ยังโดนปฏิเสธ (ยืนยันด้วยการทดสอบ insert `tenant=''` ผ่าน
+`admin_conn` ซึ่ง bypass RLS ได้แต่ไม่ bypass CHECK — เห็น `CheckViolation`
+จริง ในเทสต์ `tests/test_db_write_roundtrip.py::test_empty_string_tenant_rejected_by_check_constraint`)
+
+**ข้อเสียที่ยอมรับ:** ต้องทำลาย/สร้าง Postgres volume ใหม่เพื่อให้ init script
+รันซ้ำ (schema เปลี่ยนมีผลกับ volume ที่ init ไปแล้วเท่านั้น ไม่กระทบข้อมูลจริงเพราะ
+ยังอยู่ในขั้น dev) — ไม่มีข้อเสียเชิง behavior ใดๆ เพราะไม่มี use case ที่ tenant
+ควรเป็นค่าว่างอยู่แล้ว

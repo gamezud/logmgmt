@@ -8,7 +8,15 @@ CREATE TABLE events (
 
     -- Multi-tenant isolation key. Enforced by the RLS policy below, not by
     -- application code adding WHERE tenant = ? — see docs/DECISIONS.md.
-    tenant        text NOT NULL,
+    -- CHECK (not just NOT NULL): the RLS policy compares tenant to
+    -- current_setting('app.tenant', true), which comes back as '' (not
+    -- NULL) on a connection that touched app.tenant earlier and later ran
+    -- a query outside any transaction without resetting it (a real
+    -- scenario for a long-lived ingest connection reused across tenants).
+    -- That still fails closed today only because no real tenant value is
+    -- ever ''  — this CHECK makes that an enforced invariant instead of a
+    -- coincidence. See docs/DECISIONS.md.
+    tenant        text NOT NULL CHECK (tenant <> ''),
 
     -- Common schema's "@timestamp" field. Stored as event_time internally
     -- (Postgres can't use "@timestamp" as an unquoted identifier); the future
@@ -75,10 +83,23 @@ CREATE TABLE events_default PARTITION OF events DEFAULT;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events FORCE ROW LEVEL SECURITY;
 
--- current_setting(..., true) (missing_ok = true) returns NULL if app.tenant
--- was never set for this session/transaction, and `tenant = NULL` is never
--- true — so an unset app.tenant fails closed (zero visible/insertable rows),
--- not open.
+-- current_setting(..., true) (missing_ok = true) can come back two
+-- different ways depending on history, and this policy fails closed in
+-- both, for two different reasons:
+--   1. NULL, if app.tenant was never set on this connection at all —
+--      `tenant = NULL` is never true under normal SQL NULL semantics, so
+--      no row matches.
+--   2. '' (empty string), if app.tenant WAS set earlier via set_config(...,
+--      true) inside a transaction that has since ended (COMMIT/ROLLBACK) —
+--      Postgres resets a custom GUC placeholder to '' on transaction end,
+--      not back to NULL. This matters for a long-lived connection reused
+--      across tenants (e.g. the ingest syslog server), where a later query
+--      could run without re-setting app.tenant first. Here `tenant = ''`
+--      fails closed NOT because of NULL semantics but because of the
+--      `CHECK (tenant <> '')` constraint on the column above, which makes
+--      "no real tenant is ever ''" an enforced invariant instead of a
+--      coincidence this policy happens to rely on. Verified against
+--      postgres:16 — see docs/DECISIONS.md.
 CREATE POLICY tenant_isolation ON events
     USING (tenant = current_setting('app.tenant', true))
     WITH CHECK (tenant = current_setting('app.tenant', true));
