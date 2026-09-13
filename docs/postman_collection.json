@@ -1,0 +1,188 @@
+{
+  "info": {
+    "name": "Log Management System",
+    "description": "POST /auth/login sets the collection's `token` variable automatically (see its Tests script), so every other request's Authorization header (`Bearer {{token}}`) just works after one login call. Run Login first. Create the demo account it uses with:\n\n.venv/bin/python -m backend.create_user --username admin_a --password demo-password --role admin --tenant demoA\n\nSee docs/DECISIONS.md for why POST /ingest requires an admin token and why any \"tenant\" field in its body is ignored (tenant always comes from the token).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000", "type": "string" },
+    { "key": "token", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('token', body.access_token);",
+                  "    pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string'));",
+                  "} else {",
+                  "    pm.test('login failed', () => pm.expect.fail(pm.response.code + ': ' + pm.response.text()));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin_a\",\n  \"password\": \"demo-password\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Me",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{base_url}}/auth/me",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "me"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ingest",
+      "item": [
+        {
+          "name": "POST /ingest (assignment §4.3 API sample)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant\": \"demoA\",\n  \"source\": \"api\",\n  \"event_type\": \"app_login_failed\",\n  \"user\": \"alice\",\n  \"ip\": \"203.0.113.7\",\n  \"reason\": \"wrong_password\",\n  \"@timestamp\": \"2025-08-20T07:20:00Z\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The \"tenant\" field above is intentionally the assignment's own sample value — the response's `tenant` (and the stored row's tenant) will be whatever tenant your token belongs to, NOT \"demoA\", proving the body's tenant field is ignored. See docs/DECISIONS.md.",
+            "url": {
+              "raw": "{{base_url}}/ingest",
+              "host": ["{{base_url}}"],
+              "path": ["ingest"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Search",
+      "item": [
+        {
+          "name": "GET /search (no filters)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{base_url}}/search?limit=50&offset=0",
+              "host": ["{{base_url}}"],
+              "path": ["search"],
+              "query": [
+                { "key": "limit", "value": "50" },
+                { "key": "offset", "value": "0" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /search (filtered)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{base_url}}/search?event_type=app_login_failed&user=alice&limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["search"],
+              "query": [
+                { "key": "event_type", "value": "app_login_failed" },
+                { "key": "user", "value": "alice" },
+                { "key": "src_ip", "value": "203.0.113.7", "disabled": true },
+                { "key": "source", "value": "api", "disabled": true },
+                { "key": "start_time", "value": "2025-08-20T00:00:00Z", "disabled": true },
+                { "key": "end_time", "value": "2025-08-21T00:00:00Z", "disabled": true },
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Stats",
+      "item": [
+        {
+          "name": "GET /stats/top?field=user",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{base_url}}/stats/top?field=user&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["stats", "top"],
+              "query": [
+                { "key": "field", "value": "user", "description": "ip | user | event_type" },
+                { "key": "limit", "value": "10" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /stats/timeline?interval=hour",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{base_url}}/stats/timeline?interval=hour",
+              "host": ["{{base_url}}"],
+              "path": ["stats", "timeline"],
+              "query": [
+                { "key": "interval", "value": "hour", "description": "minute | hour | day" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
