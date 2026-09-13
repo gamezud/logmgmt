@@ -1,7 +1,10 @@
-# Runs the FastAPI backend. Built from the repo root (see the `backend`
-# service's `build.context` in docker-compose.yml) because this image needs
-# both backend/ and ingest/ — POST /ingest reuses ingest/normalizers and
-# ingest/db directly rather than duplicating them (see docs/DECISIONS.md).
+# Runs the FastAPI backend AND (via docker-compose.yml's `alert-engine`
+# service, which overrides CMD) the alert engine — the same image is reused
+# for both rather than maintaining two near-identical Dockerfiles, see
+# docs/DECISIONS.md. Built from the repo root (see `build.context` in
+# docker-compose.yml) because this image needs backend/, ingest/ (POST
+# /ingest reuses ingest/normalizers and ingest/db directly) AND alerting/
+# (the alert engine reuses ingest/db's connect_async the same way).
 FROM python:3.10-slim
 
 WORKDIR /app
@@ -11,6 +14,7 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 
 COPY backend/ backend/
 COPY ingest/ ingest/
+COPY alerting/ alerting/
 
 # Run as a non-root user. Without this the process runs as root (the
 # python:3.10-slim base image's default) — if the FastAPI app were ever

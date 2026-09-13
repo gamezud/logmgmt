@@ -6,9 +6,11 @@ breaks its package-relative imports).
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 
+from backend.config import FRONTEND_ORIGIN
 from backend.db import pool
-from backend.routers import auth, ingest, search, stats
+from backend.routers import alert_rules, alerts, auth, ingest, search, stats
 
 
 @asynccontextmanager
@@ -25,10 +27,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Log Management System", lifespan=lifespan)
 
+# allow_credentials=False: every request carries its JWT as a manually-
+# attached `Authorization: Bearer` header (see docs/DECISIONS.md on JWT
+# storage), never a cookie — so there's nothing here that needs the
+# credentialed-CORS mode, just a plain allowed-origin allowlist.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[FRONTEND_ORIGIN],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(auth.router)
 app.include_router(ingest.router)
 app.include_router(search.router)
 app.include_router(stats.router)
+app.include_router(alert_rules.router)
+app.include_router(alerts.router)
 
 
 @app.get("/health")

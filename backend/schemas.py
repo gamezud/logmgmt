@@ -68,3 +68,60 @@ class TopStatItem(BaseModel):
 class TimelineBucket(BaseModel):
     bucket: datetime
     count: int
+
+
+# --- Alerting (docs/DECISIONS.md #35-#41) -----------------------------------
+# No `rule_type` field on Create/Update: the only valid value this session
+# is "failed_login_burst" (enforced by alert_rules' own CHECK constraint),
+# so the router sets it server-side rather than asking the client to send a
+# constant back to us.
+
+class AlertRuleCreate(BaseModel):
+    threshold: int = Field(default=5, gt=0)
+    window_seconds: int = Field(default=300, gt=0)
+    cooldown_seconds: int = Field(default=900, gt=0)
+    enabled: bool = True
+
+
+class AlertRuleUpdate(BaseModel):
+    # All optional: PATCH only touches the fields the caller actually sent.
+    threshold: Optional[int] = Field(default=None, gt=0)
+    window_seconds: Optional[int] = Field(default=None, gt=0)
+    cooldown_seconds: Optional[int] = Field(default=None, gt=0)
+    enabled: Optional[bool] = None
+
+
+class AlertRuleResponse(BaseModel):
+    id: int
+    tenant: str
+    rule_type: str
+    threshold: int
+    window_seconds: int
+    cooldown_seconds: int
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class AlertResponse(BaseModel):
+    id: int
+    tenant: str
+    rule_id: int
+    triggered_at: datetime
+    src_ip: IPvAnyAddress
+    event_count: int
+    threshold: int
+    window_seconds: int
+    # The real-world span the source claims (MIN/MAX(event_time) of the
+    # matched rows) — NOT the ingested_at window that decided whether to
+    # fire. See docs/DECISIONS.md and alerting/engine.py.
+    window_start: datetime
+    window_end: datetime
+    webhook_sent_at: Optional[datetime] = None
+
+
+class AlertListResponse(BaseModel):
+    items: list[AlertResponse]
+    limit: int
+    offset: int
+    has_more: bool

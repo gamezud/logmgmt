@@ -19,6 +19,18 @@ a fresh volume).
   automatically; see `make partitions`.
 - `04_seed_partitions.sql` — calls `create_daily_partitions()` once so the
   database is writable immediately after first startup.
+- `05_users_schema.sql` — the `users` table (backend login accounts). No RLS
+  — see its own header comment and `docs/DECISIONS.md` for why.
+- `06_alerts_schema.sql` — `alert_rules` (admin-configurable rule config,
+  one row per tenant per rule type) and `alerts` (fired alerts), both with
+  the same RLS shape as `events`. Not partitioned — alerts fire far less
+  often than raw log ingest, so there's no continuous-write case to justify
+  it. See `docs/DECISIONS.md`.
+
+`02_schema.sql` also carries `idx_events_tenant_ingested_at`, added for the
+alerting engine's scheduled query, which filters on `ingested_at` (not
+`event_time` — see `docs/DECISIONS.md` for why the alert rule's detection
+window deliberately doesn't trust a source device's clock).
 
 ## The one thing to know before touching this
 

@@ -958,3 +958,272 @@ exception ดิบ
 **ข้อเสียที่ยอมรับ:** ไม่มีข้อเสียเชิง security ที่มีนัยสำคัญ — endpoint นี้ตอบ 503
 (ไม่ใช่ 200 พร้อม field บอกสถานะ) เมื่อ DB ไม่พร้อม เพื่อให้ healthcheck แบบ
 `curl -f`/similar ที่เช็คแค่ HTTP status ทำงานถูกต้องด้วย
+
+---
+
+## 35. `alert_rules` + `alerts`: RLS แบบเดียวกับ `events`, ไม่ partition, และ composite FK `(tenant, rule_id)`
+
+**บริบท:** session นี้เพิ่ม alerting — ต้องมีตารางเก็บ config ของ alert rule
+(admin แก้ได้ viewer ดูได้อย่างเดียว) และตารางเก็บ alert ที่ยิงแล้ว (ทั้งสอง role
+ดูได้) โดยข้อมูลทั้งสองเป็นข้อมูลต่อ tenant เหมือน `events`
+
+**ตัวเลือกที่พิจารณา:**
+- RLS: (a) เปิด RLS เหมือน `events` (b) ไม่เปิด แล้วพึ่ง `WHERE tenant = ?`
+  ในโค้ด backend เอง
+- Partitioning: (c) partition รายวันเหมือน `events` (d) ตารางธรรมดา ไม่ partition
+- ความสัมพันธ์ `alerts.rule_id` → `alert_rules.id`: (e) FK ปกติ `rule_id
+  REFERENCES alert_rules(id)` (f) composite FK `(tenant, rule_id) REFERENCES
+  alert_rules(tenant, id)` (ต้องมี `UNIQUE (tenant, id)` บน `alert_rules` เพิ่ม)
+
+**สิ่งที่เลือก:** (a) + (d) + (f)
+
+**เหตุผล:** (a) — หลักการเดียวกับ #6-#8: ทุก query ต้องผ่าน RLS จริง ไม่ใช่แค่
+filter ในโค้ด ข้อมูล alert ของ tenant หนึ่งไม่ควรรั่วไปอีก tenant ด้วยเหตุผล
+เดียวกับ `events` ทุกประการ — ทั้งสองตารางใช้ policy `tenant_isolation` รูปแบบ
+เดียวกันเป๊ะ (`tenant = current_setting('app.tenant', true)`)
+
+(d) — `events` ต้อง partition เพราะรับ insert ต่อเนื่องปริมาณสูงตลอดเวลา (log
+ทุกรายการ) แต่ `alerts` ยิงน้อยกว่ามาก (ถูกจำกัดด้วย cooldown ต่อ src_ip อยู่แล้ว
+ดู #36) และ `alert_rules` เป็นแค่ config ที่ admin แก้เป็นครั้งคราว ไม่มี pattern
+เขียนต่อเนื่องปริมาณสูงแบบ `events` ที่จะทำให้ต้นทุนการ partition (#9-#11) คุ้มค่า
+
+(f) — ถ้าใช้ FK ธรรมดาแบบ (e) ไม่มีอะไรบังคับว่า `alerts.tenant` กับ
+`alert_rules.tenant` (ของ rule ที่ `rule_id` ชี้ไป) ต้องตรงกัน มันจะถูกต้องแค่
+เพราะโค้ด engine เขียนถูกทุกครั้ง (query rule พร้อม tenant เดียวกันเสมอ) —
+เป็นสมมติฐานแบบเดียวกับที่ #19-#20 เจอมาก่อนแล้วว่าไม่ควรพึ่งพาเฉยๆ composite FK
+`(tenant, rule_id) REFERENCES alert_rules (tenant, id)` (ต้องมี
+`UNIQUE (tenant, id)` เพิ่มบน `alert_rules` เพื่อให้ Postgres อ้างอิงได้) ทำให้
+DB เองปฏิเสธการ insert ทันทีถ้า `alerts.tenant` ไม่ตรงกับ tenant ของ rule ที่ชี้ไป
+ไม่ต้องพึ่งพาว่าโค้ด engine เขียนถูกเฉยๆ
+
+**ข้อเสียที่ยอมรับ:** ไม่มี retention policy สำหรับ `alerts` ในเซสชันนี้ (ต่างจาก
+`events` ที่โจทย์บังคับ ≥7 วัน) — ยอมรับได้เพราะไม่ใช่ requirement ที่ให้คะแนน
+สำหรับตารางนี้ ถ้าปริมาณ alert โตมากในอนาคตต้องกลับมาพิจารณาใหม่ และ
+`alert_rules` ไม่มี DELETE endpoint (ปิดด้วย `enabled=false` แทน) เพื่อเลี่ยงต้อง
+ตัดสินใจว่า `alerts` ที่อ้างอิง rule ที่ถูกลบไปแล้วควรเกิดอะไรขึ้น
+
+---
+
+## 36. Detection window ของ alert engine ใช้ `ingested_at` ไม่ใช่ `event_time` — แต่รายงาน `event_time` ใน alert
+
+**บริบท:** query ตรวจจับ "failed login ≥N ครั้งใน M วินาที" ต้องเลือกว่าจะกรอง
+แถวด้วยคอลัมน์เวลาไหน `event_time` (เวลาที่อุปกรณ์ต้นทางอ้างเอง) หรือ
+`ingested_at` (เวลาที่ระบบนี้ insert แถวจริงๆ, `DEFAULT now()`, มีอยู่แล้วตั้งแต่
+session แรก)
+
+**ตัวเลือกที่พิจารณา:**
+- (a) ใช้ `event_time` อย่างเดียวทั้งกรองและรายงาน
+- (b) ใช้ `ingested_at` อย่างเดียวทั้งกรองและรายงาน
+- (c) กรอง (WHERE) ด้วย `ingested_at` แต่รายงาน `window_start`/`window_end`
+  ในตาราง `alerts` ด้วย `MIN`/`MAX(event_time)` ของแถวที่ match
+
+**สิ่งที่เลือก:** (c)
+
+**เหตุผล:** (a) ถูกต้องในแง่ความหมาย ("เหตุการณ์เกิดขึ้นจริงเมื่อไหร่") แต่เอามาใช้
+เป็นเงื่อนไข WHERE ตรงๆ ทำให้ความถูกต้องของ alert ขึ้นอยู่กับนาฬิกาของอุปกรณ์ที่
+ระบบนี้ไม่ได้ควบคุม — ถ้านาฬิกาอุปกรณ์ช้ากว่าจริงเกิน `window_seconds`
+เหตุการณ์ทุกอันจากอุปกรณ์นั้นจะมี `event_time` อยู่นอกหน้าต่างเสมอ ไม่ใช่แค่ครั้ง
+เดียว แต่ **ตลอดไปจนกว่าจะมีคนไปแก้นาฬิกา** — เป็น false negative แบบเงียบและ
+ถาวร เช่นเดียวกับ agent ที่ buffer แล้วส่ง log เป็น batch ทุก 2-3 นาที ก็เจอปัญหา
+เดียวกันถ้า delay มากกว่า window — เป็น failure mode แบบเดียวกับที่ #7/#20
+พยายามเลี่ยงมาตลอด (พึ่งพา input จากภายนอกที่ตรวจสอบไม่ได้)
+
+(b) แก้ปัญหานาฬิกาได้เต็มที่ (ใช้เวลาของระบบเราเองเท่านั้น) แต่ถ้าเอามารายงานด้วย
+จะทำให้ `window_start`/`window_end` บอกว่า "เพิ่งเกิดขึ้น" สำหรับเหตุการณ์ที่จริงๆ
+เกิดขึ้นเมื่อไหร่ก็ไม่รู้ตามที่อุปกรณ์อ้าง — ไม่มีประโยชน์กับคนที่ต้องสืบสวน incident
+จริงๆ ว่าเกิดขึ้นช่วงไหน
+
+(c) แยกสองหน้าที่ออกจากกัน: **การตัดสินใจว่าจะยิง alert หรือไม่** ใช้ `ingested_at`
+(ไม่พึ่งนาฬิกาอุปกรณ์เลย ปลอดภัยกว่าในแง่ threat model ของระบบ log
+management ที่ไม่ควรเชื่อ input จากอุปกรณ์ภายนอกแม้แต่เรื่อง timing ของตัวเอง)
+ส่วน **สิ่งที่รายงานให้ผู้ดูแลเห็น** ใช้ `event_time` (`MIN`/`MAX` ของแถวที่ match
+ในก query เดียวกัน ไม่มีต้นทุนเพิ่ม) เพื่อให้เห็นช่วงเวลาจริงตามที่อุปกรณ์อ้าง —
+ได้ความถูกต้องทั้งสองด้านพร้อมกัน
+
+**ข้อเสียที่ยอมรับ:** สืบทอดข้อเสียของ (b) มาเต็มๆ ในด้านการกรอง — ถ้าอุปกรณ์
+หลุดการเชื่อมต่อแล้วส่ง log ที่สะสมไว้ 20 นาทีมาในครั้งเดียว (`ingested_at`
+กระจุกตัวในไม่กี่วินาที) ระบบจะเห็นเป็น burst ที่เกิดในเวลาสั้นๆ ทั้งที่จริงกระจาย
+อยู่ 20 นาที เป็น false positive ที่เป็นไปได้ — เช่นเดียวกับการโหลด batch ข้อมูล
+เก่าผ่าน `ingest/batch_loader.py` โดยไม่ใส่ `--rebase-timestamps` ถ้าไฟล์นั้น
+มีแถวที่ตรงเงื่อนไข ≥ threshold ต่อ src_ip เดียวกัน จะดูเหมือน burst ที่เพิ่งเกิด
+ทั้งที่เป็นข้อมูลเก่า (ยอมรับได้เพราะตัวอย่างในโปรเจคนี้ไม่มีไฟล์ไหนมีแถวมากพอจะ
+ชนเงื่อนไข default `threshold=5`) — เพิ่ม index `idx_events_tenant_ingested_at`
+(`02_schema.sql`) เพราะ index เดิม 4 ตัวของ `events` (#12) ไม่มีตัวไหนมี
+`ingested_at` เลย ถ้าไม่เพิ่ม query นี้ (รันทุก 30 วินาทีตลอดไป) จะช้าลงเรื่อยๆ
+ตามปริมาณข้อมูลใน retention window — เป็นต้นทุน index บน insert เพิ่มอีกหนึ่งตัว
+ตามหลักการเดียวกับที่ #12 ใช้เลือก/ตัด index ของ `events`
+(หมายเหตุ: ทำให้เหตุผลของ `idx_events_tenant_src_ip_time` ใน #12 ที่อ้างอิง
+"the required alert rule" ตอนนี้ใช้ได้แค่กับ Top-IP บน dashboard เท่านั้น
+ไม่ใช่กับ query ของ alert engine เองอีกต่อไป เพราะ query นั้นเปลี่ยนมากรองด้วย
+`ingested_at` ไม่ใช่ `event_time`)
+
+---
+
+## 37. Alert engine เป็น scheduled poll ทุก 30 วินาที ไม่ใช่ streaming/trigger
+
+**บริบท:** ต้องตัดสินใจว่ากลไกตรวจจับ "failed login ≥5 ครั้งใน 5 นาที" จะทำงาน
+แบบไหน — ตรวจทันทีเมื่อมี event ใหม่เข้ามา (streaming) หรือตรวจเป็นรอบ
+
+**ตัวเลือกที่พิจารณา:**
+- (a) DB trigger บน `events` ที่ยิง `pg_notify` แล้วมี listener process แยก
+- (b) message queue/streaming pipeline (เช่น รูปแบบ Kafka)
+- (c) scheduled poll: process เดียว `while True: evaluate(); sleep(30)`
+  รัน SQL ธรรมดาทุกรอบ
+
+**สิ่งที่เลือก:** (c)
+
+**เหตุผล:** เงื่อนไขของ rule เองมีหน่วยเป็นนาที (5 ครั้งใน 5 นาที) — การตรวจจับ
+ที่ไวกว่านั้นมาก (ภายใน 1 วินาทีหลัง event ที่ 5) แทบไม่ต่างจากตรวจภายใน 30
+วินาทีในทางปฏิบัติ ไม่คุ้มกับความซับซ้อนที่เพิ่มขึ้น (a) ผูก alert evaluation
+เข้ากับความสำเร็จของ insert เอง (ถ้า trigger error จะกระทบ insert ที่มันติดอยู่
+ด้วย) — เป็น failure mode แบบเดียวกับที่ #6/#9/#11 ปฏิเสธมาตลอดสำหรับ write
+path (b) เป็น infrastructure ใหม่ที่ไม่มีอะไรในโปรเจคนี้รองรับอยู่แล้ว ขัดกับกฎ
+ข้อ 2 ของ `CLAUDE.md` (ต้องอธิบาย library/pattern ใหม่ก่อนใช้ และ "อาจ scale
+ในอนาคต" ไม่ใช่เหตุผลที่พอสำหรับ demo) — เป็น trade-off แบบเดียวกับที่ #31
+เลือก OFFSET pagination เหนือ keyset ที่ demo scale นี้
+
+**ข้อเสียที่ยอมรับ:** ตรวจจับช้าสุด ~30 วินาทีหลังเงื่อนไขเป็นจริง (ไม่ใช่ real-time
+เป๊ะ) — ยอมรับได้เพราะ window ของ rule เองกว้างกว่านี้มาก และ process เดียว
+ที่ evaluate ทุก tenant ตามลำดับ (ไม่ parallel) หมายความว่าถ้ามี tenant จำนวน
+มากมาก การ evaluate รอบหนึ่งอาจใช้เวลานานกว่า interval เอง — ยังไม่ implement
+การจำกัด/ขนาน tenant ในเซสชันนี้ เพราะจำนวน tenant ระดับ demo ไม่ถึงจุดนั้น
+
+---
+
+## 38. Cooldown คีย์ด้วย `(tenant, rule_id, src_ip)` และคำนวณผ่าน `alerts.triggered_at` เอง ไม่มีตารางแยก
+
+**บริบท:** query ตรวจจับเป็น rolling window ที่รันซ้ำทุก 30 วินาที — ถ้า src_ip
+หนึ่งยังโจมตีต่อเนื่อง มันจะ match เงื่อนไข "≥5 ครั้งใน 5 นาที" ซ้ำทุกรอบตราบใด
+ที่การโจมตียังไม่หยุด ถ้าไม่มี cooldown จะยิง alert (และ webhook) ทุก 30 วินาที
+สำหรับเหตุการณ์เดียวกัน
+
+**ตัวเลือกที่พิจารณา:**
+- คีย์ของ cooldown: (a) global ทั้ง tenant (b) ต่อ `(tenant, rule_id, src_ip)`
+- แหล่งข้อมูล cooldown: (c) query `MAX(triggered_at)` จาก `alerts` เอง
+  (d) ตารางแยก `cooldown_state` เก็บเวลาล่าสุดต่อคีย์
+- พฤติกรรมเมื่อ cooldown หมดอายุแต่การโจมตียังไม่หยุด: (e) หยุดแจ้งเตือนถาวร
+  หลังครั้งแรก (f) แจ้งเตือนซ้ำเมื่อ cooldown หมดอายุ ถ้าเงื่อนไขยังเป็นจริงอยู่
+
+**สิ่งที่เลือก:** (b) + (c) + (f)
+
+**เหตุผล:** (a) จะทำให้ IP ที่โจมตีจริงตัวที่สองถูกซ่อนไปเพราะ IP อื่นเพิ่งยิง
+alert ไปก่อนหน้านี้ — ไม่มีเหตุผลรองรับเลย (b) ตัดปัญหานี้ทันทีเพราะคีย์แยกตาม
+src_ip ที่แท้จริง (c) ไม่มีข้อมูลอะไรที่ตาราง `alerts` ที่มีอยู่แล้วไม่ได้ให้ —
+สร้างตารางใหม่แค่เพื่อ derive ค่าเดียวกันคือความซับซ้อนที่ไม่จำเป็นตามกฎข้อ 3
+ของ `CLAUDE.md` (e) คือ "เงียบระหว่างเหตุการณ์จริง" ซึ่งแย่กว่า spam เสียอีก —
+ถ้า attacker โจมตีต่อเนื่อง 1 ชั่วโมง แต่ admin ได้ alert แค่ครั้งเดียว ก็ไม่รู้เลยว่า
+ยังโจมตีต่ออยู่หรือหยุดไปแล้ว (f) ทำให้ attacker ที่ยังโจมตีต่อเนื่องได้รับการแจ้งเตือน
+ซ้ำเป็นระยะ (ทุก `cooldown_seconds`, default 15 นาที) แทนที่จะเป็น "ครั้งเดียว
+ตลอดกาล" หรือ "ทุก 30 วินาที" — จุดกึ่งกลางที่ไม่พลาด incident จริงและไม่ spam
+`cooldown_seconds` เป็นคอลัมน์แยกจาก `window_seconds` โดยตั้งใจ (ไม่ผูกเป็นค่า
+เดียวกัน) เพราะ "ตรวจจับนานแค่ไหน" กับ "แจ้งเตือนซ้ำถี่แค่ไหน" ควรเป็นคนละ knob
+
+**ข้อเสียที่ยอมรับ:** ออกแบบมาเพื่อ engine instance เดียว (single process) —
+ถ้ามีหลาย instance รันพร้อมกันในอนาคต (เช่น scale ออก) การเช็ค cooldown แบบนี้
+มี race condition (สอง instance เห็น "past cooldown" พร้อมกันแล้วยิงซ้ำ) —
+ยอมรับได้เพราะ session นี้ deploy แค่ instance เดียวเสมอ (`docker-compose.yml`
+ไม่มี replica) ถ้าต้อง scale ในอนาคตต้องเพิ่ม distributed lock หรือทำให้ insert
+เป็น idempotent ด้วยกลไกอื่น
+
+---
+
+## 39. Failed-login matching heuristic: `event_type`/`action ILIKE` แทน enum ตายตัว
+
+**บริบท:** query ตรวจจับต้องรู้ว่าแถวไหนคือ "failed login" แต่แต่ละ source
+normalize คำนี้ไม่เหมือนกันเลย — `ad` → `event_type="LogonFailed"`, `api` →
+`event_type="app_login_failed"` — ไม่มีคอลัมน์ boolean หรือค่า `action` กลาง
+ที่ใช้ร่วมกันได้แบบ `severity`/`src_ip`
+
+**ตัวเลือกที่พิจารณา:**
+- (a) allowlist ค่า `event_type` ที่รู้จักตรงๆ ทีละ source (เช่น
+  `event_type IN ('LogonFailed', 'app_login_failed', ...)`)
+- (b) `(event_type ILIKE '%login%' OR event_type ILIKE '%logon%') AND
+  (event_type ILIKE '%fail%' OR action ILIKE '%fail%')`
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** (a) ต้องแก้โค้ด engine ทุกครั้งที่มี source ใหม่เพิ่มเข้ามา และไม่รู้
+ล่วงหน้าว่า source ในอนาคตจะตั้งชื่อ event_type ว่าอะไร — (b) จับทั้งสอง
+ตัวอย่างที่มีอยู่จริงในโปรเจคนี้ได้โดยไม่ต้องรู้จักชื่อ source ล่วงหน้าเลย การบังคับ
+ทั้งคำว่า "login/logon" และ "fail" ร่วมกัน (ไม่ใช้แค่ "fail" อย่างเดียว) ป้องกันไม่ให้
+จับ event_type ที่ไม่เกี่ยวข้องแต่มีคำว่า fail ปนอยู่ (เช่น สมมติ source อื่นใช้
+`task_failed`)
+
+**ข้อเสียที่ยอมรับ:** source ในอนาคตที่ normalize "failed login" เป็นค่าที่ไม่มี
+คำว่า login/logon/fail เลย (เช่น รหัสตัวเลขล้วนไม่มีข้อความ) จะไม่ถูกจับ — เป็น
+gap จริงแต่ไม่กระทบ session นี้เพราะ normalizer ทุกตัวที่มีอยู่แล้วผลิตข้อความที่
+match ทั้งหมด เหมือนกับที่ #3 ยอมรับว่าไม่บังคับ enum บน `action` ด้วยเหตุผล
+คล้ายกัน (ข้อมูลจริงจาก vendor ไม่ได้ fit enum ตายตัวเสมอไป)
+
+---
+
+## 40. Alert engine เป็น process แยก (`alerting/engine.py`) และหา tenant จาก `users`
+
+**บริบท:** alert engine ต้องรันเป็นระยะๆ ตลอดเวลาโดยไม่มี HTTP request ใดๆ
+เข้ามาเรียก และไม่มี JWT ให้อ่าน tenant — ต่างจากทุก endpoint อื่นในระบบที่
+tenant มาจาก JWT claim เสมอ
+
+**ตัวเลือกที่พิจารณา:**
+- ตำแหน่งที่รัน: (a) `asyncio.create_task(...)` ใน `backend/main.py`'s
+  lifespan (b) process แยกต่างหาก (`alerting/engine.py`)
+- แหล่งที่มาของรายชื่อ tenant: (c) connection แบบ superuser
+  (`POSTGRES_USER`) bypass RLS แล้ว `SELECT DISTINCT tenant FROM events`
+  (d) `SELECT DISTINCT tenant FROM users` ผ่าน `app_user` (ตารางเดียวที่
+  ไม่มี RLS อยู่แล้ว — ดู #25)
+
+**สิ่งที่เลือก:** (b) + (d)
+
+**เหตุผล:** (a) จะแชร์ event loop เดียวกับ backend API server — ถ้า
+scheduler tick ช้าหรือมีบั๊ก จะไปแย่งเวลา event loop กับการตอบ HTTP request
+ซึ่งเป็นงานคนละประเภทกันโดยสิ้นเชิง และมันไม่มีประโยชน์อะไรจาก
+`backend/db.py`'s `AsyncConnectionPool` เลย (pool นั้นออกแบบมาสำหรับ
+concurrent request หลาย tenant พร้อมกัน แต่ engine ต้องการแค่ connection
+เดียวที่ใช้ซ้ำทุก 30 วินาที ตรงกับ pattern ของ `ingest/db.py`'s
+`connect_async()` พอดี) (b) แยกเป็น process ของตัวเอง — restart/ดู log
+แยกจาก backend ได้ เหมือนที่ `ingest/syslog_server.py` เป็น process แยก
+จาก backend อยู่แล้ว ไม่ใช่ของใหม่ในทางสถาปัตยกรรม
+
+สำหรับ tenant: (c) ใช้ superuser bypass RLS ได้ผลลัพธ์เดียวกัน แต่เปิดช่องให้
+โค้ด engine ที่มีบั๊กเข้าถึงข้อมูลข้าม tenant ได้แบบไม่มีอะไรกั้นเลย (เพราะ
+superuser bypass RLS เสมอ — #6) ขัดกับหลัก defense-in-depth ที่ระบบนี้ยึดถือ
+มาตลอด (d) ใช้ `app_user` เดิม (ไม่มี credential ใหม่) กับตาราง `users` ที่ถูก
+ออกแบบไว้แล้วว่า "ต้อง query ได้ก่อนรู้ tenant" (เหตุผลเดียวกับที่ login ต้องใช้
+มันตั้งแต่ #25) — เป็นการใช้ property เดิมซ้ำ ไม่ใช่ข้อยกเว้นใหม่ หลังจากรู้ชื่อ
+tenant แล้ว engine set `app.tenant` ด้วย `set_config()` เหมือน `ingest/db.py`
+และ `backend/db.py` ทุกประการ ก่อน query ตารางที่มี RLS ใดๆ ทำให้ RLS ยัง
+ป้องกันบั๊กของ engine เองได้เต็มที่ (ไม่ใช่แค่ "เขียน loop ให้ถูก" เท่านั้น)
+
+**ข้อเสียที่ยอมรับ:** tenant ที่มี events แต่ไม่มี user account เลย จะไม่มีทาง
+ตั้งค่า alert rule หรือดู alert ได้ (ไม่มีใคร login เข้าไปตั้งค่าได้) — ยอมรับได้
+เพราะเป็นข้อจำกัดเดียวกับทั้งระบบอยู่แล้ว: ไม่มี endpoint ไหนใช้ข้อมูลของ tenant
+ได้เลยถ้าไม่มี user account อย่างน้อยหนึ่งคน
+
+---
+
+## 41. Webhook: env var เดียว `ALERT_WEBHOOK_URL`, ไม่ตั้งค่า = engine ทำงานปกติ ไม่ error
+
+**บริบท:** โจทย์ระบุแค่ "ส่ง webhook ได้ ตั้งค่าผ่าน env var" — ต้องตัดสินใจว่า
+ปลายทาง webhook ผูกกับอะไร และถ้าไม่ได้ตั้งค่าไว้เลยควรเกิดอะไรขึ้น
+
+**ตัวเลือกที่พิจารณา:**
+- ปลายทาง: (a) env var เดียวใช้ร่วมกันทุก tenant (b) คอลัมน์ webhook URL แยก
+  ต่อ tenant ใน `alert_rules`
+- พฤติกรรมเมื่อไม่ได้ตั้งค่า: (c) engine หยุดทำงาน/raise error ตอน startup
+  (d) engine ทำงานตามปกติ แค่ข้ามขั้นตอนส่ง webhook
+
+**สิ่งที่เลือก:** (a) + (d)
+
+**เหตุผล:** (a) ตรงกับคำของโจทย์ตรงๆ ("ตั้งค่าผ่าน env var") และไม่ต้องสร้าง
+UI/endpoint จัดการ webhook ต่อ tenant ที่ยังไม่มีใครขอ — YAGNI แบบเดียวกับที่
+ใช้ตัด role ที่สามใน #24 (d) เพราะ webhook เป็นแค่ "ช่องทางแจ้งเตือนเสริม" ไม่ใช่
+ที่เก็บข้อมูล alert จริง — alert ทุกอันถูก insert ลง `alerts` เรียบร้อยแล้วก่อนจะ
+พยายามส่ง webhook เสมอ (`GET /alerts` เห็นได้ไม่ว่า webhook จะถูกตั้งค่าไว้หรือไม่)
+ดังนั้นการไม่ตั้งค่า `ALERT_WEBHOOK_URL` ไม่ควรทำให้ alerting ทั้งระบบหยุดทำงาน
+— `.env.example` เองก็ไม่ได้กำหนดให้ตัวแปรนี้จำเป็น การเช็คว่ามีค่าหรือไม่เกิดขึ้น
+ก่อนเรียก `send_webhook()` เสมอ (ไม่ปล่อยให้ไปพังใน `httpx` เอง)
+
+**ข้อเสียที่ยอมรับ:** ไม่มี retry queue สำหรับ webhook ที่ส่งไม่สำเร็จ (`alerts
+.webhook_sent_at` จะเป็น `NULL` ทั้งกรณี "ไม่ได้ตั้งค่า" และ "ตั้งค่าแล้วแต่ส่งไม่
+สำเร็จ" แยกแยะไม่ได้จากแถวเดียว ต้องดู log ของ engine เพิ่ม) — ยอมรับได้เพราะ
+สิ่งที่ assignment ต้องการคือ "เห็น alert ผ่าน UI หรือ webhook" ไม่ใช่การรับประกัน
+การส่ง webhook สำเร็จ 100%

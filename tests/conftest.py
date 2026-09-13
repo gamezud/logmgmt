@@ -18,6 +18,7 @@ import backend.db as backend_db
 from backend.config import dsn as backend_dsn
 from backend.main import app
 from backend.security import TokenClaims, create_access_token, hash_password
+from ingest.db import connect_async
 
 
 def _dsn(user: str, password: str) -> str:
@@ -61,17 +62,22 @@ def make_app_conn():
 @pytest.fixture(autouse=True)
 def _clean_test_rows(admin_conn):
     """Tests write rows tagged with names starting 'test_' — tenants in
-    `events`, usernames in `users`. app_user has no DELETE grant on either
-    (events is append-only by design; users has no delete path at all in
-    this session — see docs/DECISIONS.md), so cleanup runs as admin_conn,
-    which bypasses RLS. `users.username` is UNIQUE, so leftover test users
-    from a previous run would otherwise collide with a later run's insert —
-    this must clean up both before AND after each test, not just after, in
-    case a previous run crashed mid-test without reaching its own teardown.
+    `events`/`alert_rules`/`alerts`, usernames in `users`. app_user has no
+    DELETE grant on any of these (events/alerts are append-only by design;
+    alert_rules only allows admin to UPDATE, not DELETE — see
+    docs/DECISIONS.md; users has no delete path at all in this session), so
+    cleanup runs as admin_conn, which bypasses RLS. `users.username` is
+    UNIQUE, so leftover test users from a previous run would otherwise
+    collide with a later run's insert — this must clean up both before AND
+    after each test, not just after, in case a previous run crashed
+    mid-test without reaching its own teardown. `alerts` is deleted before
+    `alert_rules` since it has a FOREIGN KEY on (tenant, rule_id).
     """
 
     def _clean():
         with admin_conn.cursor() as cur:
+            cur.execute(r"DELETE FROM alerts WHERE tenant LIKE 'test\_%' ESCAPE '\'")
+            cur.execute(r"DELETE FROM alert_rules WHERE tenant LIKE 'test\_%' ESCAPE '\'")
             cur.execute(r"DELETE FROM events WHERE tenant LIKE 'test\_%' ESCAPE '\'")
             cur.execute(r"DELETE FROM users WHERE username LIKE 'test\_%' ESCAPE '\'")
 
@@ -101,6 +107,21 @@ async def client(monkeypatch):
             yield ac
     finally:
         await test_pool.close()
+
+
+@pytest_asyncio.fixture
+async def engine_conn():
+    """A plain app_user async connection with no tenant set yet — the same
+    starting point alerting/engine.py's main() creates via
+    ingest.db.connect_async(), reused across many evaluate_tenant() calls
+    within one test. Used by tests/test_alert_engine.py to call
+    alerting.engine.evaluate_tenant()/run_once() directly, without going
+    through the HTTP layer (the engine has no HTTP surface of its own)."""
+    conn = await connect_async()
+    try:
+        yield conn
+    finally:
+        await conn.close()
 
 
 @pytest.fixture

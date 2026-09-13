@@ -179,6 +179,18 @@ CREATE INDEX idx_events_tenant_user_time ON events (tenant, "user", event_time D
 -- Top Event Type aggregation.
 CREATE INDEX idx_events_tenant_event_type_time ON events (tenant, event_type, event_time DESC);
 
+-- The alerting engine's scheduled query (backend/db/init/06_alerts_schema.sql,
+-- alerting/engine.py): filters on ingested_at, not event_time, so it's
+-- immune to a source device's clock skew (see docs/DECISIONS.md for the
+-- full event_time-vs-ingested_at comparison). None of the four indexes
+-- above include ingested_at, so without this one the engine's per-tenant,
+-- per-tick scan would degrade into a full-tenant scan across every
+-- retained partition as the 7-day retention window fills up — one more
+-- index paid on every INSERT (docs/DECISIONS.md #12's cost category),
+-- accepted because the alternative is a query that gets slower every day,
+-- on the one query that has to run every 30 seconds forever.
+CREATE INDEX idx_events_tenant_ingested_at ON events (tenant, ingested_at DESC);
+
 -- Search inside vendor-specific fields not promoted to columns. Default
 -- jsonb_ops (not jsonb_path_ops) supports both containment (@>) and
 -- key-existence (?, ?|, ?&) operators, at the cost of a larger index.

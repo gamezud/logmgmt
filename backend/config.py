@@ -51,6 +51,12 @@ JWT_SECRET_KEY = validate_jwt_secret(os.environ.get("JWT_SECRET_KEY"))
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "60"))
 
+# The frontend's origin, for CORS (backend/main.py). Vite's default dev port
+# — a browser running the frontend is a different origin than this API, so
+# without this every fetch() from it would be blocked by the browser itself
+# before the request even reaches FastAPI's own auth checks.
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")
+
 
 def dsn() -> str:
     return (
