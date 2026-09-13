@@ -39,3 +39,15 @@ def test_parse_rfc3164_does_not_roll_back_when_not_in_the_future():
     now = datetime(2026, 9, 12, tzinfo=timezone.utc)
     result = parse_rfc3164("Jan 1 00:00:00", now=now)
     assert result == datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def test_parse_rfc3164_tolerates_small_clock_skew_without_rolling_back():
+    """A timestamp a couple of minutes in the future is normal clock skew
+    (the sending device's clock running slightly fast), not a year-boundary
+    straggler -- must not trigger the year rollback. Guards the
+    timedelta(minutes=5) tolerance in parse_rfc3164 from being deleted or
+    shrunk to zero by accident.
+    """
+    now = datetime(2026, 9, 12, 10, 0, 0, tzinfo=timezone.utc)
+    result = parse_rfc3164("Sep 12 10:02:00", now=now)
+    assert result == datetime(2026, 9, 12, 10, 2, 0, tzinfo=timezone.utc)
