@@ -1227,3 +1227,243 @@ UI/endpoint จัดการ webhook ต่อ tenant ที่ยังไม
 สำเร็จ" แยกแยะไม่ได้จากแถวเดียว ต้องดู log ของ engine เพิ่ม) — ยอมรับได้เพราะ
 สิ่งที่ assignment ต้องการคือ "เห็น alert ผ่าน UI หรือ webhook" ไม่ใช่การรับประกัน
 การส่ง webhook สำเร็จ 100%
+
+---
+
+## 42. JWT ฝั่ง browser เก็บใน `sessionStorage` ไม่ใช่ `localStorage` หรือ in-memory อย่างเดียว
+
+**บริบท:** ต้องตัดสินใจว่า frontend เก็บ JWT (จาก `POST /auth/login`) ไว้ที่ไหน
+ใน browser แล้วแนบเป็น `Authorization` header เอง (`frontend/src/api/client.js`)
+
+**ตัวเลือกที่พิจารณา:**
+- (a) `localStorage`
+- (b) `sessionStorage`
+- (c) เก็บใน React state อย่างเดียว ไม่ persist เลย
+- (d) httpOnly cookie ที่ browser แนบให้อัตโนมัติ
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** (d) ถูกตัดตั้งแต่แรกเพราะคำสั่งของ session นี้เอง ("เก็บ JWT แล้วแนบ
+Authorization header ทุก request") บอกอยู่แล้วว่า frontend เป็นฝ่ายแนบ header เอง
+ซึ่งขัดกับธรรมชาติของ cookie ที่ browser แนบให้อัตโนมัติ — การเปลี่ยนไปใช้ cookie
+ต้องแก้ `backend/deps.py`'s `HTTPBearer` scheme ด้วย ซึ่งอยู่นอกขอบเขตของ session
+นี้ (ทำแค่ frontend + alerting) ระหว่าง (a)/(b)/(c): (c) บังคับให้ login ใหม่ทุกครั้ง
+ที่ reload หน้า เป็นความรำคาญจริงสำหรับ reviewer ที่ต้อง reload ระหว่าง demo 30
+นาที (a) กับ (b) ต่างกันแค่ scope ของการ persist — ทั้งคู่เป็น storage ที่
+JavaScript อ่านได้เหมือนกันทุกประการ (ถ้ามี XSS ที่ไหนในแอป ก็อ่านได้ทั้งคู่)
+เลือก (b) เพราะจำกัดช่วงเวลาที่ token มีอยู่ให้แคบกว่า (หายไปเมื่อปิดแท็บ ไม่ข้าม
+แท็บ) โดยไม่เสีย UX เรื่อง reload เลย
+
+**ข้อเสียที่ยอมรับ:** ความปลอดภัยที่แท้จริงจาก XSS ไม่ได้มาจากการเลือก storage
+เลย — มันมาจากการไม่มีช่องโหว่ XSS ตั้งแต่แรก (React escape เนื้อหาที่ render โดย
+default, ไม่มีจุดไหนในโค้ดใช้ `dangerouslySetInnerHTML`) `sessionStorage` แค่ลด
+"หน้าต่างเวลา" ที่ token มีอยู่ ไม่ใช่การป้องกันที่สมบูรณ์
+
+---
+
+## 43. Frontend เพิ่ม `react-router-dom` เป็น dependency ใหม่ ไม่ใช้ Redux/Zustand
+
+**บริบท:** ต้องมี 4 หน้า (Login/Dashboard/Search/Alerts) พร้อม auth guard ที่
+redirect กลับ login เมื่อไม่มี token/token หมดอายุ ซึ่ง `CLAUDE.md` กฎข้อ 2
+บังคับว่าต้องอธิบายก่อนใช้ library ใหม่ใดๆ
+
+**ตัวเลือกที่พิจารณา:**
+- Routing: (a) เขียน routing เอง (เทียบ pathname เอง, จัดการ browser history
+  เอง) (b) `react-router-dom`
+- State ของ auth (token/claims): (c) Redux/Zustand (d) `React.Context` ธรรมดา
+
+**สิ่งที่เลือก:** (b) + (d)
+
+**เหตุผล:** (a) ต้องเขียนโค้ดจัดการ `history.pushState`, sync กับปุ่ม
+back/forward ของ browser, และ nested layout (Dashboard/Search/Alerts ใช้ nav
+bar เดียวกันผ่าน `components/Layout.jsx`) เองทั้งหมด — ยาวกว่าและมีจุดพลาดได้
+มากกว่าการใช้ router มาตรฐานที่แก้ปัญหาพวกนี้มาแล้ว ในเคสนี้ library มาตรฐาน
+อ่านง่ายกว่าโค้ด hand-rolled ตามเจตนารมณ์กฎข้อ 3 ของ `CLAUDE.md` ไม่ใช่ข้อยกเว้น
+(b) เป็นเพียง library เดียวที่เพิ่มนอกเหนือ stack ที่ล็อกไว้ สำหรับ state: (c)
+เกินความจำเป็นเพราะ state ที่ share ข้ามหน้าจริงๆ มีแค่ก้อนเดียว (JWT +
+role/tenant) (d) พอสำหรับขนาดนี้อยู่แล้ว ไม่ต้องเพิ่ม dependency ใหม่อีกตัว
+
+**ข้อเสียที่ยอมรับ:** ไม่มีข้อเสียที่มีนัยสำคัญสำหรับขนาดแอปนี้ — ถ้าแอปโตขึ้นมาก
+ในอนาคต (หลายสิบหน้า, state ที่ซับซ้อนกว่านี้) อาจต้องพิจารณา state library
+แยกใหม่
+
+---
+
+## 44. Frontend เรียก `GET /auth/me` หลัง login แทนการ decode JWT เอง
+
+**บริบท:** หลัง login สำเร็จ ต้องรู้ role/tenant ของผู้ใช้เพื่อแสดงผล (เช่น ซ่อน
+ปุ่ม save ของฟอร์มแก้ alert rule สำหรับ viewer ใน `pages/AlertsPage.jsx`)
+
+**ตัวเลือกที่พิจารณา:**
+- (a) decode JWT payload เองฝั่ง client (base64 decode ส่วนกลางของ token โดย
+  ไม่ verify signature เพราะ frontend ไม่มี secret อยู่แล้ว)
+- (b) เรียก `GET /auth/me` ที่มีอยู่แล้ว
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** `/auth/me` มีอยู่แล้วและถูกออกแบบมาเพื่อสิ่งนี้ตรงๆ (คืนค่า claims ที่
+verify แล้วจาก payload ที่ `decode_access_token` ตรวจสอบ signature ผ่านมาแล้ว —
+ดู `backend/routers/auth.py`) การ decode เองฝั่ง client เป็นโค้ดซ้ำที่ backend
+ทำให้แล้ว และเสี่ยงต่อการที่ค่าที่แสดงผลฝั่ง client เพี้ยนไปจากสิ่งที่ server จะ
+บังคับจริง (ถ้า claim shape เปลี่ยนในอนาคต ต้องแก้สองที่แทนที่จะแก้ที่เดียว)
+
+**ข้อเสียที่ยอมรับ:** เพิ่ม round-trip เครือข่ายหนึ่งครั้งหลัง login เทียบกับ
+decode ในเครื่องที่เร็วกว่า — ยอมรับได้เพราะเกิดแค่ครั้งเดียวตอน login ไม่ใช่ทุก
+request
+
+---
+
+## 45. Frontend จัดการ token หมดอายุแบบ reactive เท่านั้น (ไม่มี client-side timer)
+
+**บริบท:** โจทย์ของ session นี้ระบุ "ถ้า token หมดอายุหรือได้ 401 ให้กลับไปหน้า
+login"
+
+**ตัวเลือกที่พิจารณา:**
+- (a) ตั้ง timer ฝั่ง client ให้ตรงกับ `exp` ของ token แล้ว logout อัตโนมัติเมื่อ
+  ถึงเวลา
+- (b) ไม่ตั้ง timer ใดๆ — จับแค่ตอนได้ response 401 จริงๆ จาก request ใดๆ
+  (`frontend/src/api/client.js`)
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** token ที่หมดอายุแล้วถูกส่งไปยัง endpoint ใดก็ตาม จะได้ 401 กลับมา
+เสมออยู่แล้ว (`decode_access_token` โยน `ExpiredSignatureError`,
+`backend/deps.py` แปลงเป็น 401 ทุกกรณีของ `PyJWTError`) ดังนั้น handler เดียว
+ที่ดัก 401 ใน `api/client.js` ครอบคลุมทั้งสองกรณีที่โจทย์ระบุ ("หมดอายุ" กับ
+"ได้ 401") อยู่แล้วในตัว ไม่ต้องเพิ่ม timer แยกที่ต้องคอย sync กับค่า
+`JWT_EXPIRE_MINUTES` ของ backend (ถ้า backend เปลี่ยนค่านี้ frontend ต้องรู้ด้วย
+ไม่งั้น timer จะผิดจังหวะ) — YAGNI แบบเดียวกับที่ backend เองไม่ทำ token
+revocation ใน #32
+
+**ข้อเสียที่ยอมรับ:** ถ้าผู้ใช้ไม่ trigger request ใดๆ เลยหลัง token หมดอายุ
+(เปิดหน้าทิ้งไว้เฉยๆ ไม่ interact) จะไม่ถูกเด้งออกทันทีที่หมดอายุเป๊ะๆ — จะถูก
+เด้งออกก็ต่อเมื่อมี request ครั้งถัดไป ยอมรับได้เพราะไม่ใช่ security boundary จริง
+(การเข้าถึงข้อมูลถูกบังคับที่ backend อยู่แล้วไม่ว่า UI จะรู้ตัวช้าแค่ไหน)
+
+---
+
+## 46. CORS: allowlist origin เดียวจาก env var, ไม่ใช้ credentials mode
+
+**บริบท:** browser บล็อก cross-origin fetch จาก frontend (Vite dev server,
+คนละ origin กับ backend) โดย default ต้องเปิด CORS ที่ backend
+(`backend/main.py`)
+
+**ตัวเลือกที่พิจารณา:**
+- (a) `allow_credentials=True` (จำเป็นถ้าใช้ cookie-based auth)
+- (b) `allow_credentials=False` พร้อม allowlist origin เดียวจาก
+  `FRONTEND_ORIGIN`
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** ระบบนี้ไม่เคยใช้ cookie เลย (ดู #42 — JWT อยู่ใน `sessionStorage`,
+แนบเป็น `Authorization` header เอง) จึงไม่มีเหตุผลต้องเปิด credentialed-CORS
+ซึ่งมีข้อจำกัดเพิ่ม (เช่น ห้ามใช้ `allow_origins=["*"]` ร่วมกับ credentials) —
+allowlist ธรรมดาพร้อม origin เดียวที่ config ผ่าน env var ง่ายกว่าและตรงกับสิ่ง
+ที่ระบบต้องการจริง
+
+**ข้อเสียที่ยอมรับ:** ไม่มีข้อเสียที่มีนัยสำคัญ — เป็นการเลือก mode ที่ตรงกับ
+สถาปัตยกรรมที่มีอยู่แล้วเป๊ะ
+
+---
+
+## 47. Dashboard: Top IP/User/Event Type แสดงเป็นตาราง ไม่ใช่ bar chart
+
+**บริบท:** โจทย์ (§2.2) ต้องการ "Top IP/User/Event Type" บน dashboard โดยไม่ได้
+ระบุรูปแบบการแสดงผล
+
+**ตัวเลือกที่พิจารณา:**
+- (a) bar chart ด้วย Recharts (เหมือน timeline)
+- (b) ตาราง HTML ธรรมดา (อันดับ/ค่า/จำนวน — `components/TopNTable.jsx`)
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** Top-N แต่ละอันมีแค่ ~10 แถว การอ่าน "ค่าอะไร → จำนวนเท่าไหร่" จาก
+ตารางตรงไปตรงมากว่าการกะความยาวแท่ง โดยเฉพาะเมื่อค่า (IP address, username) เป็น
+string ยาวๆ ที่ใส่บน bar chart จะอ่านยาก — สงวน Recharts ไว้กับ timeline ที่
+chart ให้คุณค่าจริง (เห็น trend ตามเวลา ซึ่งตารางไม่ทำได้ดีเท่า)
+
+**ข้อเสียที่ยอมรับ:** ไม่มีนัยสำคัญ — ตารางกับ bar chart ให้ข้อมูลเดียวกันครบถ้วน
+แค่รูปแบบการแสดงผลต่างกัน
+
+---
+
+## 48. ยังไม่มี frontend Docker service หรือ Caddy TLS ใน session นี้
+
+**บริบท:** `docker-compose.yml` มี comment เดิมตั้งแต่ session ก่อนว่า
+"Frontend/caddy are added in later sessions"
+
+**ตัวเลือกที่พิจารณา:**
+- (a) เพิ่ม frontend service (nginx serve static build) + Caddy TLS ใน session
+  นี้ด้วย
+- (b) ปล่อยให้ demo ผ่าน `npm run dev` ตรงๆ กับ backend ที่ dockerize ไว้แล้ว
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** ขอบเขตของ session นี้ตามคำสั่งคือ "frontend และ alerting" ไม่ใช่
+deployment/packaging — `npm run dev` ชี้ไปที่ backend ที่รันผ่าน `make up` ได้
+อยู่แล้ว เพียงพอสำหรับ demo และทดสอบ ไม่ต้องเพิ่ม Docker service ใหม่ที่ไม่มี
+อะไรให้ทดสอบเพิ่มในเซสชันนี้ (TLS ยังไม่ implement เลยทั้งระบบ ไม่ใช่แค่
+frontend)
+
+**ข้อเสียที่ยอมรับ:** ผู้ตรวจต้องรัน `npm install && npm run dev` เองแทนที่จะ
+ได้ frontend มาพร้อมกับ `make up` ตัวเดียว — ต้อง implement ในเซสชัน
+deployment/SaaS ที่ตามมาถึงจะครบทั้ง 2 โหมด (appliance/SaaS) ตามที่โจทย์ต้องการ
+จริงๆ
+
+---
+
+## 49. `npm audit` มีช่องโหว่ 4 รายการที่ตั้งใจไม่แก้ในเซสชันนี้ + ไม่ upgrade `recharts` ไป major version 3
+
+**บริบท:** `npm install` ของ `frontend/` รายงาน 4 ช่องโหว่ (3 moderate, 1 high)
+และ deprecation warning ของ `recharts@2.x` แนะนำให้ bump เป็น v3 — ต้องตัดสินใจ
+ว่าจะแก้ตามคำแนะนำอัตโนมัติหรือไม่ ก่อนจะยืนยันเวอร์ชันสุดท้ายใน
+`frontend/package.json`
+
+**รายละเอียดที่พบจริงจาก `npm audit`:**
+1. `esbuild <=0.24.2` (ผ่าน `vite`) — "enables any website to send any
+   request to the dev server and read the response" — severity moderate
+2. `react-router 6.0.0-7.17.0` (ผ่าน `react-router-dom`) — open redirect ผ่าน
+   backslash ใน `<Link>`/`useNavigate`, และช่องโหว่ arbitrary constructor
+   injection ใน SSR hydration's `deserializeErrors()`
+
+**ตัวเลือกที่พิจารณา:**
+- (a) `npm audit fix --force` (จะ upgrade `vite` เป็น major version 8 และ
+  `react-router-dom` เป็น major version 7 — ทั้งคู่เป็น breaking change)
+- (b) ปล่อยไว้ตามเวอร์ชันปัจจุบัน พร้อมบันทึกเหตุผลว่าทำไมความเสี่ยงจริงของแอปนี้
+  ต่ำ
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:**
+- ช่องโหว่ `esbuild` กระทบเฉพาะตอนรัน **dev server** เท่านั้น (ไม่ใช่ production
+  build ที่ deploy จริง) และ appliance/SaaS ตามโจทย์ไม่ได้เปิด dev server ให้
+  คนนอกเข้าถึง — ผลกระทบจึงจำกัดอยู่แค่เครื่อง dev ของผู้พัฒนาเอง
+- ช่องโหว่ SSR ของ `react-router` ไม่เกี่ยวกับแอปนี้เลยเพราะเป็น client-side
+  rendering (CSR) ล้วนๆ ไม่มี SSR ใดๆ
+- ช่องโหว่ open-redirect ของ `react-router` ต้องการ input ที่ผู้โจมตีควบคุมได้
+  ไปยัง `<Link>`/`useNavigate` โดยตรง — ทุกจุดในแอปนี้ที่เรียก `Navigate`/
+  `useNavigate` (`App.jsx`, `AuthContext.jsx`, `LoginPage.jsx`,
+  `ProtectedRoute.jsx`) ใช้ path คงที่ที่เขียนไว้ในโค้ดเอง (`/login`,
+  `/dashboard`) ไม่เคยรับ path จาก user input หรือ query param เลย จึงไม่มีช่อง
+  ให้ใช้ประโยชน์จากช่องโหว่นี้ได้จริงในสถาปัตยกรรมนี้
+- การ `--force` upgrade ทั้ง `vite` (v5→v8) และ `react-router-dom` (v6→v7) เป็น
+  breaking change สองตัวพร้อมกันโดยไม่มีเวลาไล่ debug/verify migration ใน
+  เซสชันนี้ มีความเสี่ยงทำให้ของที่ทำงานอยู่แล้วพังมากกว่าประโยชน์ที่ได้จาก
+  ช่องโหว่ที่ไม่ apply กับการใช้งานจริงของแอปนี้
+
+สำหรับ `recharts`: ระหว่างแก้ปัญหานี้ เกือบ bump `recharts` จาก `^2.12.7` เป็น
+`^3.2.1` ตาม deprecation notice ของ `npm install` โดยยังไม่ได้ตรวจสอบว่า API ที่
+`TimelineChart.jsx` ใช้ (`AreaChart`, `ResponsiveContainer`, `CartesianGrid`,
+`Tooltip`) เข้ากันได้กับ v3 หรือไม่ — ถูกทักท้วงและแก้กลับก่อน commit จริง
+ยืนยันแล้วว่า `npm install` ติดตั้ง `recharts@2.15.4` จริง (ตรงกับ spec
+`^2.12.7` เดิม ไม่ใช่ผล resolve เป็น 3.x เอง) และ `npm run build` ผ่านสำเร็จกับ
+เวอร์ชันนี้ — คงไว้ที่ major version 2 ตามที่โค้ดเขียนไว้จริง ไม่ใช่ตาม
+คำแนะนำในข้อความ install log เฉยๆ
+
+**ข้อเสียที่ยอมรับ:** หนี้ทางเทคนิค (technical debt) ที่ต้องกลับมาพิจารณาใหม่ถ้า:
+(1) เซสชันในอนาคตเปิด dev server ให้เข้าถึงจากภายนอกจริงๆ (ไม่ใช่แค่ localhost
+ของผู้พัฒนา) ซึ่งจะทำให้ช่องโหว่ `esbuild` มีผลจริง (2) มีจุดในแอปที่เริ่มรับ
+redirect target จาก user input ในอนาคต ซึ่งจะทำให้ช่องโหว่ `react-router`
+open-redirect มีผลจริง (3) ต้องการ feature ใหม่ที่มีแค่ใน `recharts` v3 หรือ
+`react-router` v7 — ตอนนั้นต้องจัดเวลา verify migration ให้เพียงพอก่อน upgrade
+ไม่ใช่ bump เฉยๆ ตามคำแนะนำใน install log แบบที่เกือบทำผิดพลาดไปในเซสชันนี้

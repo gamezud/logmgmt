@@ -1,0 +1,253 @@
+:root {
+  --ink: #0b0b0b;
+  --ink-secondary: #52514e;
+  --ink-muted: #898781;
+  --surface: #fcfcfb;
+  --surface-raised: #ffffff;
+  --border: #e1e0d9;
+  --accent: #2a78d6;
+  --danger: #d03b3b;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 0.75rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+th {
+  color: var(--ink-secondary);
+  font-weight: 600;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  border-radius: 4px;
+  padding: 0.4rem 0.9rem;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--ink-secondary);
+}
+
+.checkbox-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.form-error {
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.empty-state {
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+/* --- Login --- */
+
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  width: 320px;
+  padding: 2rem;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* --- App shell --- */
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+
+.app-nav {
+  display: flex;
+  gap: 1.25rem;
+}
+
+.app-nav a {
+  color: var(--ink-secondary);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.app-nav a.active {
+  color: var(--accent);
+}
+
+.app-user {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.app-user-info {
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+}
+
+.app-main {
+  padding: 1.5rem;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.app-main > .dashboard-page,
+.app-main > .search-page,
+.app-main > .alerts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* --- Time range filter --- */
+
+.time-range-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+}
+
+.time-range-presets {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.time-range-custom {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+
+/* --- Dashboard --- */
+
+.dashboard-top-n {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1.25rem;
+}
+
+/* --- Search --- */
+
+.search-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+
+.search-results-header,
+.search-result-row summary {
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr 1.2fr 0.6fr 0.8fr 1fr 0.9fr 0.9fr;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+  align-items: center;
+}
+
+.search-results-header {
+  color: var(--ink-secondary);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.search-result-row {
+  border-bottom: 1px solid var(--border);
+}
+
+.search-result-row summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.search-result-row summary::-webkit-details-marker {
+  display: none;
+}
+
+.raw-json {
+  margin: 0 0 0.6rem 0.6rem;
+  padding: 0.6rem;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  overflow-x: auto;
+}
+
+.pagination {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* --- Alerts --- */
+
+.alert-rule-panel form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
