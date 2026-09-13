@@ -8,11 +8,18 @@ scripts:
   JSON payloads (§4.3-§4.7), unmodified.
 - `send_syslog.sh` — sends the two `.log` files to a running
   `ingest/syslog_server.py` over both UDP and TCP.
-- `post_logs.py` — POSTs the JSON samples to a `POST /ingest` HTTP
-  endpoint. **This targets a future FastAPI backend that does not exist
-  yet in this session** — running it now fails with connection-refused, by
-  design; it's included because the assignment's deliverables (§6) ask for
-  it alongside `send_syslog.sh`.
+- `post_logs.py` — logs in, then POSTs the JSON samples to `POST /ingest`
+  (admin-only — see `docs/DECISIONS.md`). Requires the backend running
+  (`make up`) and a demo admin account (see Usage below).
+  
+**`batch_loader.py` vs `post_logs.py`** — both load the same JSON samples
+but exercise different paths. `ingest.batch_loader` (used by `make seed`)
+writes straight to the database — no HTTP, no auth — for seeding demo data.
+`post_logs.py` goes through the real `POST /ingest` endpoint, authenticating
+first via `POST /auth/login`, which is what actually exercises JWT auth and
+the admin-only role check — the path the assignment's acceptance checklist
+means by "Call POST /ingest with the sample JSON."
+  
 
 ## Requirements
 
@@ -38,6 +45,13 @@ SYSLOG_UDP_PORT=1514 SYSLOG_TCP_PORT=1514 bash samples/send_syslog.sh
 
 # 3. Load the JSON samples via the batch loader (or `make seed`):
 .venv/bin/python -m ingest.batch_loader samples/api.json --rebase-timestamps
+
+# 4. Create a demo admin account (one time). The password must match
+#    post_logs.py's DEFAULT_PASSWORD, or pass --password to both:
+.venv/bin/python -m backend.create_user --username admin_a --role admin --tenant demoA
+
+# 5. Log in and POST the JSON samples through the real HTTP API:
+.venv/bin/python samples/post_logs.py
 ```
 
 `send_syslog.sh` rewrites just the date/time portion of each line to the

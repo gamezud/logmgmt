@@ -1,0 +1,12 @@
+# See docs/DECISIONS.md for why each of these over the alternative
+# considered: psycopg_pool (not a single shared connection — the backend
+# serves concurrent requests from many tenants, unlike ingest/db.py's
+# one-connection-per-process listener), PyJWT (not python-jose), bcrypt (not
+# passlib).
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2
+psycopg[binary]>=3.1
+psycopg_pool>=3.2
+pyjwt>=2.8
+bcrypt>=4.1

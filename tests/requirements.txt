@@ -2,3 +2,12 @@ pytest>=8.0
 psycopg[binary]>=3.1
 pydantic>=2
 pytest-asyncio>=0.23
+
+# For backend/ API tests: httpx.AsyncClient drives the FastAPI app in-process
+# (ASGI transport) rather than needing a running uvicorn server (see
+# docs/DECISIONS.md and CLAUDE.md rule 6 — never leave a server running).
+httpx>=0.27
+fastapi>=0.110
+psycopg_pool>=3.2
+pyjwt>=2.8
+bcrypt>=4.1

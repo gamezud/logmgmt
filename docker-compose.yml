@@ -1,6 +1,5 @@
-# Storage layer only, per this session's scope — postgres + healthcheck +
-# init scripts. Backend/frontend/ingest/caddy services are added in later
-# sessions.
+# postgres (storage layer) + backend (FastAPI API/auth). Frontend/caddy are
+# added in later sessions.
 services:
   postgres:
     image: postgres:16
@@ -20,6 +19,42 @@ services:
       - ./backend/db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      # Context is the repo root, not ./backend: the image needs both
+      # backend/ and ingest/ (POST /ingest reuses ingest/normalizers and
+      # ingest/db directly — see docs/DECISIONS.md).
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: logmgmt-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Connects as app_user, never POSTGRES_USER — see docs/DECISIONS.md.
+      # POSTGRES_HOST is the postgres *service* name here (compose's
+      # internal DNS), not localhost — this container reaches Postgres over
+      # the compose network, not the host's loopback interface.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      APP_DB_USER: ${APP_DB_USER}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      # No curl/wget in python:3.10-slim by design (smaller image) — reuse
+      # the Python already in the image instead of adding a package just
+      # for this.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 5s
       timeout: 5s
       retries: 10
