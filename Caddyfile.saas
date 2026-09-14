@@ -1,0 +1,22 @@
+# SaaS override: real domain, automatic HTTPS via Let's Encrypt instead of
+# the appliance mode's self-signed cert. Mounted in place of ./Caddyfile by
+# docker-compose.saas.yml (see docs/DECISIONS.md #53) — routing logic is
+# otherwise identical to the appliance Caddyfile.
+#
+# SITE_DOMAIN and ACME_EMAIL come from the environment (docker-compose.saas.yml
+# passes them into the caddy container from .env) rather than being hardcoded
+# here, since this file is committed to the repo and a real domain/email
+# shouldn't need a code change to configure.
+{
+    email {$ACME_EMAIL}
+}
+
+{$SITE_DOMAIN} {
+    handle_path /api/* {
+        reverse_proxy backend:8000
+    }
+
+    handle {
+        reverse_proxy frontend:8080
+    }
+}

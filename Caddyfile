@@ -1,0 +1,31 @@
+# Outer reverse proxy for appliance/dev mode: single origin, self-signed TLS.
+# `/` -> frontend container, `/api/*` -> backend container, path-stripped
+# (see docs/DECISIONS.md #50 for why path-based single-origin instead of
+# splitting frontend/backend across subdomains).
+#
+# For the SaaS override (real domain, Let's Encrypt) see Caddyfile.saas —
+# kept as a separate file rather than env-var templating one Caddyfile,
+# because the two modes' TLS directives are genuinely different statements
+# (`tls internal` vs nothing/`email`), not just different values of the same
+# statement (docs/DECISIONS.md #53).
+localhost, 127.0.0.1 {
+    # No public domain here (localhost/private IP) so Let's Encrypt can't
+    # issue a cert at all — `tls internal` tells Caddy to use its own local
+    # CA to generate one instead. Reviewers will get a browser TLS warning
+    # for this (Caddy's root CA isn't in their trust store) — expected and
+    # documented, see docs/DECISIONS.md #53 / setup_appliance.md.
+    tls internal
+
+    # handle_path strips the matched "/api" prefix before proxying, so
+    # backend receives e.g. "/auth/login", not "/api/auth/login" — the
+    # backend's routers have no "/api" prefix (confirmed: auth.py uses
+    # prefix="/auth", ingest.py is POST /ingest, etc., matching the
+    # assignment PDF's literal "POST /ingest" spec).
+    handle_path /api/* {
+        reverse_proxy backend:8000
+    }
+
+    handle {
+        reverse_proxy frontend:8080
+    }
+}

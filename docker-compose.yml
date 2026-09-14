@@ -1,7 +1,8 @@
 # postgres (storage layer) + backend (FastAPI API/auth) + alert-engine
-# (scheduled alert evaluation, docs/DECISIONS.md). Frontend/caddy are added
-# in a later session — the dashboard is demoed via `npm run dev` against
-# this backend for now (see frontend/README.md).
+# (scheduled alert evaluation) + frontend (static SPA build, served by an
+# inner Caddy) + caddy (outer reverse proxy/TLS, appliance mode: self-signed
+# via the repo-root Caddyfile — see docs/DECISIONS.md #50-#53 and the
+# Caddyfile itself for the appliance/SaaS split).
 services:
   postgres:
     image: postgres:16
@@ -89,5 +90,45 @@ services:
     # No ports exposed: nothing calls into this process, it only calls out
     # to Postgres and (optionally) a webhook URL.
 
+  frontend:
+    build:
+      # Context is ./frontend, not the repo root like backend's — unlike
+      # backend, frontend doesn't need source from any sibling directory,
+      # so there's no reason to widen the build context.
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Relative path — works unchanged in both appliance and SaaS modes
+        # because both put frontend and backend behind the same Caddy
+        # origin. See docs/DECISIONS.md #50/#51.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    container_name: logmgmt-frontend
+    restart: unless-stopped
+    # No host port published: only the caddy service talks to this, over
+    # the compose network.
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: logmgmt-caddy
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Persisted so certs (self-signed CA here, Let's Encrypt in the SaaS
+      # override) survive container restarts — without this, SaaS mode
+      # would re-request a cert from Let's Encrypt on every restart and
+      # risk hitting its rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

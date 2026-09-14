@@ -1,0 +1,18 @@
+# Static file server for the built React SPA (frontend/dist). This is the
+# INNER Caddy instance — it only serves files, it does not handle TLS or
+# /api routing. The outer Caddy (repo root Caddyfile / Caddyfile.saas)
+# terminates TLS and reverse-proxies to this container on :8080.
+:8080 {
+    root * /srv
+
+    # react-router-dom does client-side routing only — paths like /dashboard
+    # or /alerts have no matching file in dist/ (it only contains index.html
+    # + assets/). Without this fallback, opening or refreshing on any route
+    # other than "/" gets a 404 straight from Caddy because that file
+    # genuinely doesn't exist on disk. try_files checks for a real file
+    # first and only falls back to index.html when there isn't one, letting
+    # react-router-dom decide the route client-side.
+    try_files {path} /index.html
+
+    file_server
+}

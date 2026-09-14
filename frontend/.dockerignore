@@ -1,0 +1,9 @@
+# Keeps host-machine build artifacts out of the Docker build context — this
+# repo already has frontend/node_modules and frontend/dist on disk from
+# local `npm run dev`/`npm run build`, and neither should leak into the
+# image (node_modules gets reinstalled fresh via `npm ci`, dist gets
+# rebuilt fresh via `npm run build`, both inside the image).
+node_modules
+dist
+.env
+.env.local

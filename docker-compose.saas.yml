@@ -1,0 +1,29 @@
+# SaaS override — `docker compose -f docker-compose.yml -f docker-compose.saas.yml up`.
+# Only overrides what actually differs from appliance mode; everything else
+# (service definitions, healthchecks, images) is inherited unchanged from
+# docker-compose.yml. See docs/DECISIONS.md #53 for why this is two small
+# Caddyfiles swapped via override, not one Caddyfile with env-var templating.
+services:
+  caddy:
+    volumes:
+      # Compose overrides replace the whole `volumes:` list for a service,
+      # not merge it entry-by-entry — caddy_data/caddy_config must be
+      # re-listed here even though they're unchanged from docker-compose.yml.
+      - ./Caddyfile.saas:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      # Read by Caddyfile.saas as {$SITE_DOMAIN}/{$ACME_EMAIL}. Not set in
+      # appliance mode — there's no real domain to hand Let's Encrypt there.
+      SITE_DOMAIN: ${SITE_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+
+  # Once Caddy is the sole public entrypoint, raw HTTP on these ports should
+  # not be reachable directly — only appliance/dev mode keeps them published
+  # for easy local debugging. Same replace-the-list caveat as above: this
+  # empties the ports list entirely rather than merging.
+  backend:
+    ports: []
+
+  postgres:
+    ports: []

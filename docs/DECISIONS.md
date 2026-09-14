@@ -1467,3 +1467,141 @@ redirect target จาก user input ในอนาคต ซึ่งจะท
 open-redirect มีผลจริง (3) ต้องการ feature ใหม่ที่มีแค่ใน `recharts` v3 หรือ
 `react-router` v7 — ตอนนั้นต้องจัดเวลา verify migration ให้เพียงพอก่อน upgrade
 ไม่ใช่ bump เฉยๆ ตามคำแนะนำใน install log แบบที่เกือบทำผิดพลาดไปในเซสชันนี้
+
+---
+
+## 50. Routing แบบ single-origin path-based (`/` → frontend, `/api/*` → backend) แทนแยก subdomain
+
+**บริบท:** ต้องเพิ่ม Caddy เป็น reverse proxy หน้าสุดสำหรับ frontend (static
+build) กับ backend (FastAPI) และต้องตัดสินใจว่า frontend/backend จะอยู่ origin
+เดียวกันหรือคนละ origin (subdomain แยก)
+
+**ตัวเลือกที่พิจารณา:**
+- (a) แยก subdomain: `app.example.com` (frontend), `api.example.com`
+  (backend)
+- (b) origin เดียวกัน แบ่งด้วย path prefix: `/` → frontend, `/api/*` →
+  backend (strip prefix ก่อนส่งต่อ)
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** (a) ต้องมี DNS record 2 รายการ, ต้องขอ cert แยก 2 ใบ (หรือ wildcard
+cert ที่ต้องทำ DNS-01 challenge ผ่าน DNS provider API — เพิ่ม credential ใหม่ที่
+ต้องดูแล ขัดกับกฎ "ห้ามเขียนค่า secret จริงลงไฟล์ใดๆ" ของ `CLAUDE.md` โดยไม่
+จำเป็น) และที่สำคัญที่สุดคือทำให้ frontend กับ backend กลับมาเป็นคนละ origin
+— ต้องพึ่ง CORS ข้ามจริงอีกครั้ง ในขณะที่ `backend/config.py`'s
+`FRONTEND_ORIGIN` ปัจจุบันรองรับแค่ origin เดียว (string ไม่ใช่ list) จะต้องแก้
+โค้ด backend ให้รองรับ multi-origin CORS ด้วย ซึ่งอยู่นอกขอบเขตของ session นี้
+("ทำเฉพาะ packaging และ TLS") ส่วน (b) ต้องการแค่ DNS record เดียว, cert ใบ
+เดียว (HTTP-01 challenge แบบง่ายที่สุดของ Let's Encrypt ไม่ต้องมี DNS API),
+ไม่ต้องแก้โค้ด backend เลย และทำให้ frontend image เดียวใช้ได้ทั้ง appliance/
+SaaS โดยไม่ต้อง bake absolute domain ไว้ตอน build (ดูข้อ 51)
+
+**ข้อเสียที่ยอมรับ:** ต้องมี Caddy directive `handle_path /api/*` (strip prefix
+`/api` ก่อนส่งต่อให้ backend เพราะ router จริงของ backend ไม่มี prefix `/api`
+เลย — ยืนยันจากโค้ดจริง: `auth.py` ใช้ `prefix="/auth"`, `ingest.py` เป็น
+`POST /ingest` ตรงๆ ตามที่โจทย์ PDF ระบุไว้, `stats.py` ใช้ `prefix="/stats"`)
+เป็นความซับซ้อนเล็กน้อยที่ต้องเข้าใจเพิ่ม แต่เป็น directive มาตรฐานของ Caddy
+ไม่ใช่ library ใหม่
+
+---
+
+## 51. `VITE_API_BASE_URL=/api` (relative, bake ตอน build) แทน runtime-config injection — ให้ image เดียวใช้ได้ทั้ง 2 โหมด
+
+**บริบท:** `frontend/src/api/client.js` อ่าน `import.meta.env.VITE_API_BASE_URL`
+ซึ่ง Vite แทนที่เป็น string literal ตอน `vite build` (build-time ไม่ใช่
+runtime) — ไม่มี runtime-config mechanism ใดๆ อยู่แล้วในโค้ดเดิม (ไม่มี
+`window.__ENV__`, ไม่มี fetch `config.json` ตอน container start) ต้อง
+ตัดสินใจว่าจะทำให้ image เดียวใช้ได้ทั้ง appliance และ SaaS ได้อย่างไร ในเมื่อ
+ค่านี้ถูกล็อกไว้ตั้งแต่ตอน build image
+
+**ตัวเลือกที่พิจารณา:**
+- (a) เพิ่ม runtime-config pattern ใหม่ (entrypoint script generate
+  `config.js` จาก env ตอน container start, `index.html` โหลดก่อน bundle,
+  แก้โค้ด frontend ให้อ่าน `window.__ENV__` แทน `import.meta.env`)
+- (b) build image แยกกัน 2 ชุดต่อโหมด (คนละ `VITE_API_BASE_URL` ตอน build)
+- (c) bake ค่า `VITE_API_BASE_URL=/api` (relative path) เป็นค่า default
+  เดียวตอน build โดยอาศัยว่า frontend/backend อยู่หลัง Caddy origin เดียวกัน
+  เสมอทั้ง 2 โหมด (ข้อ 50)
+
+**สิ่งที่เลือก:** (c)
+
+**เหตุผล:** (a) แก้ปัญหาได้จริงแต่เป็น "pattern ที่ยังไม่ได้อธิบายมาก่อน" ตามกฎ
+ข้อ 2 ของ `CLAUDE.md` และเพิ่มโค้ดใหม่ (entrypoint script + แก้ frontend
+source) โดยไม่จำเป็น (b) ขัดกับที่โจทย์ต้องการ "image เดียวใช้ได้ทั้งสองโหมด"
+ตรงๆ ส่วน (c) relative path ใช้ได้เหมือนกันไม่ว่า origin จริงจะเป็น
+`https://localhost` (appliance) หรือ `https://yourdomain.com` (SaaS) เพราะไม่
+ต้อง encode hostname ไว้เลย — เป็นทางเดียวที่ทำให้ "image เดียวใช้ได้ทั้งสอง
+โหมด" เป็นจริงได้โดยไม่ต้องเพิ่ม pattern ใหม่
+
+**ข้อเสียที่ยอมรับ:** บังคับให้การตัดสินใจเรื่อง routing (ข้อ 50) ต้องเป็นแบบ
+single-origin path-based เท่านั้น เลือก subdomain แยกไม่ได้ถ้าไม่อยากเสีย
+property นี้ไป — และมีค่า `VITE_API_BASE_URL` อยู่ 2 จุดที่ต้อง**ต่างค่ากันโดย
+เจตนา**ตลอด (`docker-compose.yml`'s build arg = `/api`,
+`frontend/.env.example` สำหรับ `npm run dev` = `http://localhost:8000`
+เพราะ `vite.config.js` ไม่มี `server.proxy`) ซึ่งเป็นจุดที่คนในอนาคตอาจ
+copy ค่าผิดที่แล้วงงว่าทำไม dev server ได้ 404 — บรรเทาด้วย comment อธิบายไว้
+ในทั้งสองไฟล์ `.env.example`
+
+---
+
+## 52. ใช้ `caddy:2-alpine` เป็น static file server ของ frontend image แทน `nginx`
+
+**บริบท:** `frontend/Dockerfile` stage สุดท้ายต้อง serve static build
+(`dist/`) ด้วย image เล็ก ต้องเลือกว่าจะใช้อะไรเป็น static file server
+
+**ตัวเลือกที่พิจารณา:**
+- (a) `nginx:alpine` — ตัวเลือกมาตรฐานที่นิยมที่สุดสำหรับ serve SPA static
+  build (~23MB)
+- (b) `caddy:2-alpine` — ใช้ Caddy ตัวเดียวกับที่เป็น proxy/TLS หลักของ stack
+  อยู่แล้ว (~40MB)
+
+**สิ่งที่เลือก:** (b) — ยืนยันกับผู้ใช้แล้วก่อนเขียนโค้ด (ผู้ใช้เลือก (b) จาก
+คำถามที่ถามตรงๆ ระหว่าง planning)
+
+**เหตุผล:** `CLAUDE.md` ล็อก "Proxy/TLS: Caddy" ไว้เป็น stack เดียวที่อธิบาย/
+justify ไว้แล้ว การเพิ่ม `nginx` เป็น static server จะเป็นการนำ tool ใหม่ที่ยัง
+ไม่ได้อธิบายเข้ามาตามกฎข้อ 2 ของ `CLAUDE.md` ("ห้ามใช้ library หรือ pattern ที่
+ยังไม่ได้อธิบายก่อนใช้") ในขณะที่ Caddy's `file_server` directive ทำงานเดียวกัน
+ได้ด้วยบรรทัดเดียว ไม่ต้องเขียน config ใหม่ (`nginx.conf` พร้อม `try_files` ของ
+ตัวเอง) และลดจำนวนเทคโนโลยีที่ต้องอธิบายในวิดีโอเดโมเหลือแค่ตัวเดียว (Caddy)
+แทนที่จะมี 2 ตัว (Caddy + nginx)
+
+**ข้อเสียที่ยอมรับ:** มี Caddy 2 ชั้นซ้อนกัน (ชั้นนอก = proxy/TLS, ชั้นใน =
+static file server) ซึ่งอาจดูแปลกกว่ารูปแบบทั่วไป (nginx serve static +
+Caddy/nginx อื่น proxy) และ image ใหญ่กว่า `nginx:alpine` เล็กน้อย (~40MB vs
+~23MB) — ยอมรับได้เพราะไม่ใช่ต้นทุนที่มีนัยสำคัญสำหรับ demo/assignment นี้ และ
+แลกกับการไม่ต้องแนะนำ tool ใหม่ที่ต้องอธิบายเพิ่ม
+
+---
+
+## 53. แยก `Caddyfile`/`Caddyfile.saas` เป็น 2 ไฟล์ สลับด้วย compose override แทน env-var templating ไฟล์เดียว
+
+**บริบท:** ต้องรองรับ 2 โหมดของ TLS: self-signed (appliance/dev, ไม่มี domain
+จริง) กับ Let's Encrypt อัตโนมัติ (SaaS, มี domain จริง) — Caddy รองรับทั้งคู่
+ในตัวแต่ใช้ directive ต่างกันตรงๆ
+
+**ตัวเลือกที่พิจารณา:**
+- (a) Caddyfile ไฟล์เดียว ใช้ env var placeholder (`{$VAR}`) สลับพฤติกรรม
+  TLS ผ่านค่า env ที่ต่างกัน
+- (b) แยกเป็น 2 ไฟล์ (`Caddyfile` = appliance default, `Caddyfile.saas` =
+  SaaS) สลับกันด้วย `docker-compose.saas.yml` mount คนละไฟล์เข้า
+  `/etc/caddy/Caddyfile`
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** directive ของทั้ง 2 โหมดต่างกันเป็น statement คนละแบบจริงๆ ไม่ใช่
+แค่ค่าต่างกันของ statement เดียวกัน (appliance ต้องมี `tls internal`,
+SaaS ต้องไม่มี `tls internal` เลยแต่มี global option `email` แทน) — การพยายาม
+ทำ `{$VAR}` templating ให้ครอบคลุมทั้ง "มี directive นี้" กับ "ไม่มี directive
+นี้เลย" ในไฟล์เดียวจะซับซ้อนและอ่านยาก (ต้องพึ่งพฤติกรรมของ Caddy ตอน env
+ว่างเปล่า ซึ่งไม่ตรงไปตรงมา) ขัดกับกฎข้อ 3 ของ `CLAUDE.md` ที่ให้เลือกโค้ดอ่าน
+ง่ายเสมอแม้จะยาวกว่า ส่วน (b) แต่ละไฟล์สั้น อ่านจบในตาก็เข้าใจ TLS mode ของมัน
+ทันที และตรงกับ pattern ที่ `CLAUDE.md` ล็อกไว้อยู่แล้ว ("ใช้ compose override
+แทนการแยกไฟล์เต็มสองชุด" — ในที่นี้ override แค่ 1 field คือ volume mount ของ
+Caddyfile ไม่ใช่ copy ทั้ง `docker-compose.yml`)
+
+**ข้อเสียที่ยอมรับ:** มี 2 ไฟล์ที่ต้อง sync ส่วน routing logic ที่เหมือนกัน
+(`handle_path /api/*` → backend, `handle` → frontend) ด้วยมือ ถ้าแก้ routing
+ในอนาคตต้องจำไว้ว่าต้องแก้ทั้งคู่ — ยอมรับได้เพราะไฟล์เล็กมาก (ไม่กี่บรรทัด)
+และความเสี่ยงลืมแก้ไฟล์ใดไฟล์หนึ่งต่ำกว่าความเสี่ยงจาก env-var templating ที่
+อ่าน/debug ยากกว่ามาก
