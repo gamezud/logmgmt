@@ -1605,3 +1605,59 @@ Caddyfile ไม่ใช่ copy ทั้ง `docker-compose.yml`)
 ในอนาคตต้องจำไว้ว่าต้องแก้ทั้งคู่ — ยอมรับได้เพราะไฟล์เล็กมาก (ไม่กี่บรรทัด)
 และความเสี่ยงลืมแก้ไฟล์ใดไฟล์หนึ่งต่ำกว่าความเสี่ยงจาก env-var templating ที่
 อ่าน/debug ยากกว่ามาก
+
+---
+
+## 54. SaaS ไม่มีโดเมน: `Caddyfile.saas-ip` + compose override ชั้นที่สาม แทนการพึ่ง `ufw` แยกขั้นตอน
+
+**บริบท:** ระหว่างเขียนเอกสาร `docs/setup_saas.md` ต้องออกแบบ deployment path
+สำหรับ SaaS ที่ deploy บน cloud VM ที่มีแค่ public IP ไม่มีโดเมน (เช่น Vultr)
+— `docker-compose.saas.yml`/`Caddyfile.saas` เดิม (ข้อ 50-53) ออกแบบมาสำหรับ
+กรณีมีโดเมนจริงเท่านั้น (`{$SITE_DOMAIN}` + Let's Encrypt) ใช้กับ bare IP
+ไม่ได้ตรงๆ เพราะ Let's Encrypt ออก cert ให้ IP address ไม่ได้
+
+**ตัวเลือกที่พิจารณา:**
+- (a) ใช้ `docker-compose.yml` เฉยๆ (ไม่ผ่าน `.saas` override เลย) แล้วแก้
+  site address ใน `Caddyfile` ที่ deploy เพิ่ม public IP เข้าไปเอง (เช่นผ่าน
+  `sed`) จากนั้นพึ่ง `ufw` (หรือเทียบเท่า) ปิด host port ของ `backend`(8000)/
+  `postgres`(5432) เอง เพราะ `docker-compose.yml` เดิม (ไม่ใช่ override)
+  publish สอง port นี้ออก host ตรงๆ
+- (b) สร้าง `Caddyfile.saas-ip` (เหมือน `Caddyfile.saas` แต่ใช้
+  `{$SITE_ADDRESS}` + `tls internal` แทน `{$SITE_DOMAIN}` + Let's Encrypt)
+  พร้อม compose override ชั้นที่สาม `docker-compose.saas-ip.yml` ที่ใช้
+  **คู่กับ** `docker-compose.saas.yml` เดิม (ไม่ใช่แทนที่) — override แค่
+  volume mount ของ `caddy` ให้ชี้ไป `Caddyfile.saas-ip` ส่วน `ports: []` ของ
+  `backend`/`postgres` สืบทอดมาจาก `docker-compose.saas.yml` ที่อยู่ใน `-f`
+  chain เดียวกันโดยอัตโนมัติ
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** ตัวเลือก (a) ถูกเสนอไว้ก่อน แต่ถูกปฏิเสธหลังทบทวนจริง — สาเหตุคือ
+`docker-compose.yml` ตัวเปล่า (ไม่ผ่าน `.saas` override ใดๆ) publish
+`backend`/`postgres` ออก host port ตรงๆ เสมอ (ตามที่กำหนดไว้ในไฟล์นั้นเอง
+สำหรับ debug ใน appliance/dev mode) การปิดสอง port นี้ใน (a) ต้องพึ่ง `ufw`
+(หรือ cloud provider firewall) ที่เป็น**ขั้นตอนแยกต่างหาก**จากคำสั่ง
+`docker compose up` — cloud provider หลายเจ้ารวมถึง Vultr **ไม่มี firewall
+ผูกไว้ให้ default** ถ้าลืมรัน `ufw` แม้แต่ครั้งเดียวระหว่าง deploy จริง
+(เช่น deploy ภายในวันเดียวแบบเร่งด่วน) `backend`/`postgres` จะเปิดสู่
+อินเทอร์เน็ตทันทีโดยไม่มีอะไรเตือน — เป็น failure mode แบบเดียวกับที่ #6-#8
+พยายามเลี่ยงมาตลอด (พึ่งพาว่าจะมีคนจำไปทำถูก แทนที่จะบังคับที่ระบบ)
+
+(b) ทำให้ "ปิด backend/postgres" เป็นผลลัพธ์อัตโนมัติของคำสั่ง
+`docker compose -f docker-compose.yml -f docker-compose.saas.yml -f
+docker-compose.saas-ip.yml up` เดียวกันที่ใช้ deploy เอง เพราะ `ports: []`
+มาจาก `docker-compose.saas.yml` ที่อยู่ใน `-f` chain เสมอไม่ว่าจะมีโดเมนหรือ
+ไม่ก็ตาม — ไม่มีขั้นตอนแยกให้ลืม สอดคล้องกับเหตุผลเดียวกับ #53 ที่แยก
+`Caddyfile`/`Caddyfile.saas` ตาม TLS directive ที่ต่างกันจริง (ที่นี่คือ
+`tls internal` กับ IP เทียบกับ Let's Encrypt กับ domain) ไม่ใช่ env-var
+templating ไฟล์เดียวที่ต้องพึ่งพฤติกรรมตอน env ว่างเปล่า
+
+**ข้อเสียที่ยอมรับ:** มี Caddyfile 3 ไฟล์ (`Caddyfile`, `Caddyfile.saas`,
+`Caddyfile.saas-ip`) และ compose ไฟล์ 3 ไฟล์ (`docker-compose.yml` +
+`docker-compose.saas.yml` + `docker-compose.saas-ip.yml`) ที่ต้องเข้าใจ
+ความสัมพันธ์กันเป็นชั้นๆ — ซับซ้อนกว่าเดิม `ufw` (allow 22/80/443, deny
+อื่นๆ) ยังคงแนะนำไว้ใน `docs/setup_saas.md` แต่เปลี่ยนสถานะเป็น**ชั้นป้องกัน
+ที่สอง** (defense-in-depth เผื่อ service อื่นในอนาคต bind port เพิ่มโดยไม่
+ตั้งใจ) ไม่ใช่สิ่งที่ระบบต้องพึ่งเพื่อความถูกต้องพื้นฐานอีกต่อไป — ถ้าลืมตั้ง
+`ufw` ระบบก็ยังปลอดภัยเพราะ Docker ไม่ publish port เหล่านั้นออก host เลย
+ตั้งแต่แรก

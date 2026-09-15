@@ -1,0 +1,23 @@
+# Third layer for SaaS deployments with no domain (public IP only) — used
+# ON TOP OF docker-compose.saas.yml, not instead of it:
+#   docker compose -f docker-compose.yml -f docker-compose.saas.yml -f docker-compose.saas-ip.yml up -d --wait
+# This only overrides which Caddyfile is mounted and which env var it reads.
+# backend/postgres stay unpublished (ports: []) because that comes from
+# docker-compose.saas.yml underneath this file — nothing here touches those
+# services, so there is no separate host-firewall step to remember before
+# they're safe to expose. See docs/DECISIONS.md #54.
+services:
+  caddy:
+    # Compose replaces the whole volumes: list per file, not merge — same
+    # note as docker-compose.saas.yml. caddy_data/caddy_config must be
+    # re-listed here even though they're unchanged.
+    volumes:
+      - ./Caddyfile.saas-ip:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      # Read by Caddyfile.saas-ip as {$SITE_ADDRESS}. SITE_DOMAIN/ACME_EMAIL
+      # from docker-compose.saas.yml are still present in the merged
+      # environment (map keys merge, unlike the volumes list above) but
+      # harmless here — Caddyfile.saas-ip never reads them.
+      SITE_ADDRESS: ${SITE_ADDRESS}
