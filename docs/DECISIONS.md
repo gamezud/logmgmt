@@ -1661,3 +1661,66 @@ templating ไฟล์เดียวที่ต้องพึ่งพฤต
 ตั้งใจ) ไม่ใช่สิ่งที่ระบบต้องพึ่งเพื่อความถูกต้องพื้นฐานอีกต่อไป — ถ้าลืมตั้ง
 `ufw` ระบบก็ยังปลอดภัยเพราะ Docker ไม่ publish port เหล่านั้นออก host เลย
 ตั้งแต่แรก
+
+---
+
+## 55. SaaS ไม่มีโดเมน: เดโมวิ่งบน HTTP ไม่ใช่ HTTPS เพราะปัญหา TLS เฉพาะกรณี bare IP
+
+**บริบท:** หลัง #54 เลือกใช้ `Caddyfile.saas-ip` + `tls internal` สำหรับ SaaS
+ที่ไม่มีโดเมน (bare public IP) ได้ลอง deploy จริงบน Vultr VM
+(`45.77.243.188`) เพื่อทดสอบก่อนส่งงาน — deploy สำเร็จ container ทุกตัว
+healthy แต่เปิด URL จริงแล้ว browser/curl ต่อ HTTPS ไม่ได้เลย
+
+**ตัวเลือกที่พิจารณา:**
+- (a) เลื่อนส่งงานจนกว่าจะแก้ปัญหา TLS บน bare IP ได้
+- (b) ส่งเดโม SaaS บน HTTP (ไม่มี TLS) พร้อมอธิบายในเอกสารว่า TLS เคยพิสูจน์
+  แล้วว่าใช้งานได้จริงบน appliance mode (curl + browser ผ่านทั้งคู่) —
+  ปัญหานี้จำกัดเฉพาะกรณี bare IP เท่านั้น ไม่ใช่ทำ TLS ไม่สำเร็จโดยรวม
+- (c) ไม่ให้ URL เดโมเลย ให้ผู้ตรวจ (reviewer) deploy เองจาก README
+
+**สิ่งที่พบระหว่างทดสอบจริง (ไม่ใช่สมมติฐาน):** log ของ Caddy ยืนยันว่าออก
+cert สำเร็จจริง ("certificate obtained successfully, issuer: local" — ได้
+cert self-signed จาก local CA ของ Caddy เอง ตามที่ `tls internal` ควรทำ)
+แต่ทุกการเชื่อมต่อ TLS ล้มเหลวหมด ทั้ง `curl` (error
+`0A000438:SSL routines::tlsv1 alert internal error`) และ Chrome
+(`ERR_SSL_PROTOCOL_ERROR`) และ log ของ Caddy พิมพ์ซ้ำทุกครั้งที่มีการเชื่อมต่อว่า
+"server is listening only on the HTTPS port but has no TLS connection
+policies; adding one to enable TLS" — แปลว่า Caddy มี cert อยู่จริงแต่หา
+policy ที่จะใช้ cert นั้นให้ connection ที่เข้ามาไม่เจอ ลองแล้วทั้ง restart
+container, force-recreate, และระบุ `https://` ตรงๆ ใน request ก็ไม่ช่วย
+และตรวจสอบแล้วว่าไฟล์ `Caddyfile.saas-ip` ที่ mount เข้า container ถูกต้อง
+ตรงกับที่ commit ไว้จริง (ไม่ใช่ปัญหาไฟล์ผิด)
+
+สาเหตุที่วิเคราะห์ได้: TLS SNI (RFC 6066) ถูกออกแบบมาสำหรับชื่อ hostname
+เท่านั้น เวลา client ต่อไปยัง IP address ตรงๆ (ไม่มี hostname ให้ใส่) client
+ส่วนใหญ่รวมถึง `curl`/Chrome จะไม่ส่ง SNI extension มาด้วยเลย ในขณะที่ Caddy
+เลือก cert/TLS policy ที่จะใช้ตอบ connection แต่ละอันโดยจับคู่จาก SNI กับ
+site address ที่ตั้งไว้ (`{$SITE_ADDRESS}`) — เมื่อไม่มี SNI มาเลย Caddy จึง
+ไม่มีทางรู้ว่า connection นี้ควรจับคู่กับ site block ไหน ทำให้เลือก cert ที่
+มีอยู่แล้วมาใช้ไม่ได้ และตอบกลับด้วย TLS alert "internal error" แทน — เป็น
+พฤติกรรมโครงสร้างของ client/server ที่ต่างจาก config ผิดพลาดทั่วไป และเป็น
+เหตุผลว่าทำไม `Caddyfile` (appliance, `localhost`/`127.0.0.1` — เครื่องมือ
+local หลายตัวยังส่ง SNI เป็น hostname ให้) กับ `Caddyfile.saas` (มีโดเมนจริง
+เสมอมี hostname ให้ส่งเป็น SNI) ไม่เจอปัญหานี้
+
+**สิ่งที่เลือก:** (b)
+
+**เหตุผล:** ปฏิเสธ (a) เพราะปัญหานี้เป็นข้อจำกัดเชิงโครงสร้างของ TLS ผ่าน
+bare IP โดยเฉพาะ (ดูสาเหตุด้านบน) ไม่ใช่ config ผิดที่แก้ได้ในเวลาสั้นๆ —
+TLS เองพิสูจน์แล้วว่าทำงานถูกต้องบน appliance mode ทั้ง `curl` และ browser
+ผ่านหมด (#53) ดังนั้นนี่ไม่ใช่กรณี "ทำ TLS ไม่สำเร็จ" แต่เป็นข้อจำกัดเฉพาะของ
+กรณี bare-IP-ไม่มีโดเมนเท่านั้น ปฏิเสธ (c) เพราะโจทย์ assignment ให้คุณค่ากับ
+การมี URL เดโมที่เปิดดูได้จริง ไม่ใช่แค่ให้ผู้ตรวจ deploy เอง — การไม่มี URL
+เลยเสียโอกาสแสดงผลงานที่รันได้จริงไปฟรีๆ ทั้งที่ระบบทำงานถูกต้องอยู่แล้ว
+เลือก (b) เพราะ `Caddyfile.saas` (กรณีมีโดเมนจริง) ใช้ HTTPS อัตโนมัติผ่าน
+Let's Encrypt ได้ทันทีอยู่แล้วโดยไม่ต้องแก้โค้ดใดๆ เพิ่ม — ข้อจำกัดนี้จำกัดอยู่
+แค่เส้นทาง `Caddyfile.saas-ip` (ไม่มีโดเมน) เท่านั้น ถ้าใครต้องการ HTTPS จริง
+สำหรับเดโมนี้ ทางแก้คือชี้โดเมนจริงมาที่ VM แล้วใช้ `Caddyfile.saas` แทน ไม่ใช่
+ต้องแก้ `Caddyfile.saas-ip`
+
+**ข้อเสียที่ยอมรับ:** traffic ของเดโม SaaS แบบไม่มีโดเมนทั้งหมดไม่ได้เข้ารหัส
+รวมถึง JWT และรหัสผ่านตอน login ที่ส่งผ่าน `POST /auth/login` เป็น plaintext
+บนเครือข่ายระหว่างทาง — เพราะเหตุนี้ ต้องสร้างบัญชีสำหรับเดโมโดยเฉพาะ
+(throwaway account, รหัสผ่านที่ไม่ได้ใช้ที่อื่น) ห้ามใช้ข้อมูลจริงหรือรหัสผ่าน
+ที่ใช้ซ้ำที่อื่นบน deployment นี้เด็ดขาด และต้องลบ VM ทิ้งทันทีหลังส่งงาน/
+สัมภาษณ์เสร็จ ไม่ปล่อยให้ค้างไว้เป็นเดโมถาวร

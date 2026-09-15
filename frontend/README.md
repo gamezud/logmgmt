@@ -50,10 +50,8 @@ attached as `Authorization: Bearer <token>` by every request
 the backend already turns into a plain 401 — clears the stored token and
 redirects to `/login`; there's no separate client-side expiry timer.
 
-## Known gaps (accepted, not implemented this session)
+## Known gaps (accepted, not implemented)
 
-- No frontend Docker service or Caddy/TLS yet — `docker-compose.yml`'s own
-  comment already defers this to the deployment/SaaS session.
 - No JS test runner — the assignment's "≥2-3 tests" requirement is already
   met by the existing pytest suite (`tests/`).
 - `npm audit` reports 4 findings (an `esbuild` dev-server-only issue via

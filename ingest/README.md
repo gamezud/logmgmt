@@ -1,8 +1,11 @@
 # ingest
 
-This session implements the syslog UDP/TCP listener, per-source
-normalizers, and the CLI batch loader. FastAPI HTTP ingest is not
-implemented yet (a future session).
+This implements three ingest paths, all sharing the same per-source
+normalizers: the syslog UDP/TCP listener, the CLI batch loader, and FastAPI
+HTTP ingest (`POST /ingest`, in `backend/routers/ingest.py` — admin-only,
+tenant taken only from the verified JWT claim, never from the request body,
+even though the assignment's own sample payloads include one; see
+`docs/DECISIONS.md` #23).
 
 Every incoming log — regardless of source — is normalized into the single
 `NormalizedEvent` model in `models.py`, which maps the common schema's

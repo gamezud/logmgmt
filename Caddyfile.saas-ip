@@ -1,23 +1,47 @@
-# SaaS override, no-domain variant: self-signed TLS bound to the VM's public
-# IP instead of Let's Encrypt (see Caddyfile.saas for the with-domain case).
-# Mounted in place of ./Caddyfile.saas by docker-compose.saas-ip.yml, layered
-# on top of docker-compose.saas.yml — backend/postgres stay unpublished
+# SaaS override, no-domain variant: plain HTTP bound to the VM's public IP,
+# not HTTPS. Mounted in place of ./Caddyfile.saas by docker-compose.saas-ip.yml,
+# layered on top of docker-compose.saas.yml — backend/postgres stay unpublished
 # (ports: [] from docker-compose.saas.yml) exactly like the with-domain SaaS
 # case, without relying on a host firewall as the only thing standing between
 # them and the internet (see docs/DECISIONS.md #54 for why the earlier plan —
 # plain docker-compose.yml plus a manually-run ufw rule — was rejected).
 #
+# If you have a real domain instead of a bare IP, use Caddyfile.saas — it
+# gets automatic Let's Encrypt HTTPS with no changes to that file needed.
+# This file exists only for the no-domain case, where that isn't available.
+#
+# Why HTTP and not `tls internal` (self-signed, like the appliance Caddyfile
+# uses for localhost/127.0.0.1): `tls internal` was tried here first and
+# failed in a real deploy (Vultr VM, bare public IP, no domain). Caddy's own
+# logs confirmed it minted a self-signed cert successfully
+# ("certificate obtained successfully, issuer: local"), but every connection
+# still failed the TLS handshake — curl: "error:0A000438:SSL routines::tlsv1
+# alert internal error"; Chrome: ERR_SSL_PROTOCOL_ERROR — and Caddy logged
+# "server is listening only on the HTTPS port but has no TLS connection
+# policies; adding one to enable TLS" on every single attempt, meaning it
+# could never actually select the policy/cert it had just minted. Restarting
+# the container, force-recreating it, and connecting with an explicit
+# https:// scheme did not change the outcome, and the Caddyfile mounted
+# inside the container was confirmed to match this file.
+#
+# Root cause: TLS SNI (RFC 6066) only carries a hostname. There is no
+# hostname to send when a client connects to a bare IP literal, so curl and
+# Chrome both send no SNI extension at all in that case. Caddy picks which
+# site's TLS policy/certificate to serve for an incoming connection by
+# matching SNI against the configured site address — with no SNI in the
+# ClientHello, it has nothing to match {$SITE_ADDRESS} against, so it can't
+# serve the certificate it already has. This is a structural mismatch
+# between how TLS clients behave against bare IPs and how Caddy selects
+# certificates, not a config mistake in this file — it doesn't show up for
+# the appliance Caddyfile (localhost/127.0.0.1, where local tools do send
+# hostname SNI) or for Caddyfile.saas (a real domain always has a hostname
+# to send as SNI). See docs/DECISIONS.md #55 for the full rationale and the
+# downsides accepted by shipping HTTP here instead.
+#
 # SITE_ADDRESS comes from the environment (docker-compose.saas-ip.yml passes
 # it from .env) — the VM's public IP, e.g. 203.0.113.10. Routing logic below
 # is otherwise identical to Caddyfile / Caddyfile.saas.
-{$SITE_ADDRESS} {
-    # No public domain, so Let's Encrypt can't issue a cert for this site at
-    # all (same reason as the appliance Caddyfile) — tls internal mints one
-    # from Caddy's own local CA for this IP instead. Reviewers get the same
-    # browser TLS warning as appliance mode — see docs/setup_saas.md for how
-    # to click through it.
-    tls internal
-
+http://{$SITE_ADDRESS} {
     handle_path /api/* {
         reverse_proxy backend:8000
     }
