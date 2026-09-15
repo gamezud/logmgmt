@@ -14,8 +14,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       APP_DB_USER: ${APP_DB_USER}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Only runs on a fresh volume — see backend/db/README.md.
@@ -52,8 +50,6 @@ services:
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
     healthcheck:
       # No curl/wget in python:3.10-slim by design (smaller image) — reuse
       # the Python already in the image instead of adding a package just

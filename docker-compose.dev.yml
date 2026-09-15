@@ -1,0 +1,14 @@
+# Publishes backend and postgres to the host for local development only.
+# Deliberately NOT in docker-compose.yml: the default must be closed, so a
+# deployment that forgets an override is safe rather than exposed. Compose
+# merges `ports` by appending, so an override cannot remove them once the
+# base file sets them (verified against Compose v5.5.1) — the only reliable
+# way to keep them off in production is to never add them in the base.
+services:
+  backend:
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+
+  postgres:
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"

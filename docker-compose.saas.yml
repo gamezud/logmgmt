@@ -22,8 +22,3 @@ services:
   # not be reachable directly — only appliance/dev mode keeps them published
   # for easy local debugging. Same replace-the-list caveat as above: this
   # empties the ports list entirely rather than merging.
-  backend:
-    ports: []
-
-  postgres:
-    ports: []

@@ -7,15 +7,13 @@ export
 
 up:
 	@test -f .env || (echo "Missing .env — run: cp .env.example .env" >&2 && exit 1)
-	# --wait blocks until the postgres healthcheck reports healthy, so the
-	# command doesn't return before the DB is actually ready to accept queries.
-	docker compose up -d --wait
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait
 
 down:
-	docker compose down
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml down
 
 logs:
-	docker compose logs -f postgres
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f postgres
 
 psql:
 	docker compose exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
