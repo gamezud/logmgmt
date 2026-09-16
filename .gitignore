@@ -14,3 +14,4 @@ data/
 
 !samples/*.log
 reset-demo.sh
+.pytest_cache/
