@@ -58,8 +58,11 @@ tests from the host. Every script below is invoked with `python -m`, not as a ba
 script path — running `backend/create_user.py` directly instead of
 `-m backend.create_user` breaks its package-relative imports (see
 `docs/DECISIONS.md` #22).
+Load .env into the environment (make targets do this automatically,
+but scripts run directly from the shell need it explicitly)
 
 ```
+set -a && source .env && set +a
 .venv/bin/python -m backend.create_user --username admin_a --role admin --tenant demoA
 .venv/bin/python -m backend.create_user --username viewer_a --role viewer --tenant demoA
 ```
