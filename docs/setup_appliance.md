@@ -13,7 +13,7 @@ Node 20 — see `docs/architecture.md` for how the pieces fit together and
 ## 2. Clone and configure
 
 ```
-git clone <repo-url> logmgmt
+git clone https://github.com/gamezud/logmgmt.git
 cd logmgmt
 cp .env.example .env
 ```
