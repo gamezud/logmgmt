@@ -10,4 +10,7 @@ dist/
 build/
 .pytest_cache/
 data/
-*.logreset-demo.sh
+*.log
+
+!samples/*.log
+reset-demo.sh
