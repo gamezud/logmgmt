@@ -9,6 +9,13 @@ Node 20 — see `docs/architecture.md` for how the pieces fit together and
 
 - Docker + Docker Compose v2 (`docker compose version`)
 - `git`
+- `python3` with `venv` (`apt install python3-venv` on Ubuntu) — only for
+  step 5's helper scripts and the test suite; the services themselves run
+  entirely in containers.
+
+Node.js is **not** required: the frontend is built inside its own Docker
+image. You only need Node if you want to run the frontend dev server
+separately (`cd frontend && npm run dev`), which is optional.
 
 ## 2. Clone and configure
 
@@ -18,20 +25,29 @@ cd logmgmt
 cp .env.example .env
 ```
 
-## 3. Generate a real `JWT_SECRET_KEY`
+## 3. Generate real secrets
 
 ```
-python3 -c "import secrets; print(secrets.token_hex(32))"
+sed -i "s|^JWT_SECRET_KEY=.|JWT_SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')|" .env
+sed -i "s|^POSTGRES_PASSWORD=.|POSTGRES_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(16))')|" .env
+sed -i "s|^APP_DB_PASSWORD=.*|APP_DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(16))')|" .env
+
+grep -E "^(JWT_SECRET_KEY|POSTGRES_PASSWORD|APP_DB_PASSWORD)=" .env
 ```
 
-Paste the output into `.env` as `JWT_SECRET_KEY=...`. This step is not optional:
-`backend/config.py`'s `validate_jwt_secret` runs at import time, before the backend
-accepts any request, and raises `RuntimeError` — crashing the container on startup,
-not silently running insecurely — if `JWT_SECRET_KEY` is unset or still equal to the
-placeholder shipped in `.env.example` (`changeme-generate-a-real-secret`). A
-guessable secret would let anyone forge a validly-signed JWT for any tenant or role,
-which defeats every Row-Level Security policy in the system (see
+`JWT_SECRET_KEY` is the one the system refuses to start without:
+`backend/config.py`'s `validate_jwt_secret` runs at import time and raises
+`RuntimeError` — crash-looping the container rather than silently running
+insecurely — if it's unset or still the placeholder committed in
+`.env.example`. That placeholder is public by definition, and a guessable
+signing key lets anyone forge a valid JWT for any tenant or role, which
+defeats every Row-Level Security policy underneath it (see
 `docs/architecture.md`'s tenant model section and `docs/DECISIONS.md` #28).
+
+The two database passwords are not validated — Postgres accepts `changeme`
+and the stack comes up looking fine — which makes them easier to forget and
+no less real as credentials. Changing all three here means there is no
+step to remember later.
 
 ## 4. Start the stack
 
